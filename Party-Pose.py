@@ -14,8 +14,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(SCRIPT_DIR, "models")
 
 POSE_DET_ONNX = os.path.join(MODELS_DIR, "pose_detection_128x128_float32.onnx")
-# Other models are defined here but not used in this example
-POSE_LMK_ONNX = os.path.join(MODELS_DIR, "pose_landmark_upper_body_256x256_float32.onnx")
+POSE_LMK_ONNX = os.path.join(MODELS_DIR, "pose_landmark_full_body.onnx")
 FACE_DET_ONNX = os.path.join(MODELS_DIR, "det_2.5g.onnx")
 FACE_MESH_ONNX = os.path.join(MODELS_DIR, "face_landmark_192x192.onnx")
 HAND_DET_ONNX = os.path.join(MODELS_DIR, "MediaPipeHandDetector.onnx")
@@ -23,7 +22,6 @@ HAND_LMK_ONNX = os.path.join(MODELS_DIR, "hand_landmark.onnx")
 
 # ===== INPUT SIZES =====
 POSE_DET_INP = 128
-# Other input sizes are defined here but not used in this example
 POSE_LMK_INP = 256
 FACE_DET_INP = 320
 FACE_MESH_INP = 256
@@ -31,78 +29,11 @@ HAND_DET_INP = 256
 HAND_LMK_INP = 224
 
 # ===== THRESHOLDS =====
-POSE_DET_SCORE_THR = 0.5
-# Other thresholds are defined here but not used in this example
-POSE_DET_IOU_THR = 0.3
-FACE_SCORE_THR = 0.60
+POSE_CONF_THR = 0.7
+POSE_IOU_THR = 0.2
+POSE_ROI_SCALE = 2.0
+FACE_SCORE_THR = 0.50
 FACE_IOU_THR = 0.4
-
-def preprocess(frame, target_size):
-    frame_resized = cv2.resize(frame, (target_size, target_size))
-    input_data = frame_resized.astype(np.float32) / 255.0
-    input_data = np.transpose(input_data, (2, 0, 1))  # HWC to CHW
-    input_data = np.expand_dims(input_data, axis=0)
-    return input_data
-
-def postprocess_pose_detection(output, frame, original_size):
-    boxes = []
-    scores = output[0][0]
-    kpts = output[0][1]
-    for i in range(scores.shape[0]):
-        score = scores[i][4]
-        if score > POSE_DET_SCORE_THR:
-            x_center = (kpts[i][5] + kpts[i][6]) / 2
-            y_center = (kpts[i][7] + kpts[i][8]) / 2
-            width = abs(kpts[i][6] - kpts[i][5])
-            height = abs(kpts[i][8] - kpts[i][7])
-
-            x_min = int((x_center - width / 2) * original_size[1] / POSE_DET_INP)
-            y_min = int((y_center - height / 2) * original_size[0] / POSE_DET_INP)
-            x_max = int((x_center + width / 2) * original_size[1] / POSE_DET_INP)
-            y_max = int((y_center + height / 2) * original_size[0] / POSE_DET_INP)
-
-            boxes.append([x_min, y_min, x_max, y_max])
-
-    return boxes
-
-def main():
-    # Load the pose detection model
-    pose_det_session = ort.InferenceSession(POSE_DET_ONNX)
-
-    # Open the video capture
-    cap = cv2.VideoCapture(0)  # Use 0 for webcam or a path to a video file
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        original_size = (frame.shape[0], frame.shape[1])
-
-        # Preprocess the frame
-        input_data = preprocess(frame, POSE_DET_INP)
-
-        # Run the pose detection model
-        output = pose_det_session.run(None, {pose_det_session.get_inputs()[0].name: input_data})
-
-        # Postprocess the pose detection output
-        boxes = postprocess_pose_detection(output, frame, original_size)
-
-        # Draw bounding boxes on the frame
-        for box in boxes:
-            cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
-
-        # Display the frame
-        cv2.imshow('Pose Detection', frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    main()
 HAND_SCORE_THR = 0.85
 HAND_IOU_THR = 0.5
 
@@ -111,6 +42,7 @@ DRAW_POSE = True
 DRAW_FACE_MESH = True
 DRAW_HANDS = True
 DRAW_DEBUG_INFO = True
+DRAW_POSE_ROI = False  # Debug: show body detection bounding box
 SKELLY_MODE = False
 DRAW_SANTA_HAT = False
 
@@ -237,6 +169,137 @@ class ThreadedCamera:
         self.stopped = True
         self.cap.release()
 
+def generate_blazepose_anchors():
+    """Generate anchors for BlazePose detection model (128x128 input, 896 anchors)."""
+    anchors = []
+    # Layer 0: 16x16 grid, 2 anchors per cell
+    for y in range(16):
+        for x in range(16):
+            for _ in range(2):
+                anchors.append([(x + 0.5) / 16, (y + 0.5) / 16])
+    # Layer 1: 8x8 grid, 6 anchors per cell
+    for y in range(8):
+        for x in range(8):
+            for _ in range(6):
+                anchors.append([(x + 0.5) / 8, (y + 0.5) / 8])
+    return np.array(anchors, dtype=np.float32)
+
+
+def decode_pose_detections(outputs, anchors, score_thresh=0.5):
+    """Decode BlazePose detection model outputs for ALL detections above threshold.
+
+    Returns:
+        List of detection dicts with cx, cy, w, h, score, keypoints
+    """
+    # Output 0: scores (1, 896, 1)
+    # Output 1: regressors (1, 896, 12)
+    scores_raw = outputs[0][0]  # Shape: (896, 1)
+    regressors = outputs[1][0]  # Shape: (896, 12)
+
+    # Sigmoid with clipping to avoid overflow
+    scores_raw = np.clip(scores_raw, -50, 50)
+    scores = 1 / (1 + np.exp(-scores_raw))
+    scores = scores.flatten()
+
+    # Find ALL detections above threshold
+    valid_indices = np.where(scores >= score_thresh)[0]
+
+    if len(valid_indices) == 0:
+        return []
+
+    detections = []
+    for idx in valid_indices:
+        detection = regressors[idx]
+        anchor = anchors[idx]
+        score = scores[idx]
+
+        # Decode bounding box (MediaPipe format: yc, xc, h, w)
+        cy = detection[0] / 128.0 + anchor[1]
+        cx = detection[1] / 128.0 + anchor[0]
+        h = detection[2] / 128.0
+        w = detection[3] / 128.0
+
+        # Decode keypoints (for ROI rotation calculation)
+        keypoints = []
+        for i in range(4):
+            kp_y = detection[4 + i * 2] / 128.0 + anchor[1]
+            kp_x = detection[4 + i * 2 + 1] / 128.0 + anchor[0]
+            keypoints.append((kp_x, kp_y))
+
+        detections.append({
+            'cx': cx, 'cy': cy, 'w': w, 'h': h,
+            'score': score,
+            'keypoints': keypoints
+        })
+
+    return detections
+
+
+def nms_pose_detections(detections, iou_thresh=0.3):
+    """Apply Non-Maximum Suppression to pose detections."""
+    if len(detections) == 0:
+        return []
+
+    # Convert to boxes format for NMS
+    boxes = np.array([[d['cx'] - d['w']/2, d['cy'] - d['h']/2,
+                       d['cx'] + d['w']/2, d['cy'] + d['h']/2]
+                      for d in detections])
+    scores = np.array([d['score'] for d in detections])
+
+    # Apply NMS
+    keep = nms_boxes(boxes, scores, iou_thresh)
+
+    return [detections[i] for i in keep]
+
+
+def get_pose_roi(detection, frame_w, frame_h, downward_scale=POSE_ROI_SCALE):
+    """Get SQUARE ROI crop coordinates from pose detection bounding box.
+
+    Uses the raw bounding box from the detection model, extending downward
+    to capture more torso, then makes the ROI square (required by landmark model).
+
+    Args:
+        detection: Detection dict with 'cx', 'cy', 'w', 'h' keys
+        frame_w, frame_h: Original frame dimensions
+        downward_scale: How much to extend downward (1.0 = original, 2.0 = 100% more)
+
+    Returns:
+        Tuple of (x1, y1, x2, y2) crop coordinates (always square)
+    """
+    # Use raw bounding box from detection
+    cx = detection['cx'] * frame_w
+    cy = detection['cy'] * frame_h
+    w = detection['w'] * frame_w
+    h = detection['h'] * frame_h
+
+    # Extend height downward (gravity-aware)
+    extended_h = h * downward_scale
+
+    # Make it square using the larger dimension
+    size = max(w, extended_h)
+
+    # Center horizontally on detection center, anchor top vertically
+    top_y = cy - h / 2  # Original top of detection box
+
+    x1 = int(max(0, cx - size / 2))
+    y1 = int(max(0, top_y))
+    x2 = int(min(frame_w, cx + size / 2))
+    y2 = int(min(frame_h, y1 + size))
+
+    # Ensure square by adjusting if we hit frame boundaries
+    actual_w = x2 - x1
+    actual_h = y2 - y1
+    if actual_w != actual_h:
+        # Use the smaller dimension to keep it square
+        final_size = min(actual_w, actual_h)
+        # Re-center
+        x1 = int(max(0, cx - final_size / 2))
+        x2 = x1 + final_size
+        y2 = y1 + final_size
+
+    return x1, y1, x2, y2
+
+
 def generate_blazepalm_anchors(input_size=256):
     strides = [8, 16, 32]
     anchor_scales = [[1.0, 2.0], [1.0, 2.0, 3.0], [1.0, 2.0]]
@@ -286,7 +349,7 @@ def decode_palm_with_anchors(outs, anchors):
     boxes = np.stack([pred_cx, pred_cy, pred_w, pred_h], axis=1)
     return boxes, scores
 
-def decode_scrfd_detections(scores, bboxes, kpss, img_shape, input_size=640, score_thresh=0.5):
+def decode_scrfd_detections(scores, bboxes, img_shape, input_size=640, score_thresh=0.5):
     feat_stride_fpn = [8, 16, 32]
     num_anchors = 2
 
@@ -447,6 +510,36 @@ def expand_face_box(box, W, H, scale=1.5):
 
     return [new_x1, new_y1, new_x2, new_y2]
 
+def preprocess_for_detection(frame, size, norm='unit', output_format='NHWC'):
+    """Preprocess frame for model inference.
+
+    Args:
+        frame: BGR input frame
+        size: Target size as int (square) or tuple (w, h)
+        norm: 'unit' [0,1] or 'centered' [-1,1]
+        output_format: 'NHWC' or 'NCHW'
+
+    Returns:
+        Preprocessed tensor with batch dimension
+
+    Note: SCRFD face detection uses custom preprocessing inline (not this helper).
+    """
+    if isinstance(size, int):
+        size = (size, size)
+
+    img = cv2.resize(frame, size, interpolation=cv2.INTER_LINEAR)
+    img = img[:, :, ::-1].astype(np.float32)  # BGR to RGB
+
+    if norm == 'unit':
+        img = img / 255.0
+    elif norm == 'centered':
+        img = (img / 127.5) - 1.0
+
+    if output_format == 'NCHW':
+        img = np.transpose(img, (2, 0, 1))
+
+    return img[None, ...]
+
 def crop_for_hand_lmk(frame, box):
     x1, y1, x2, y2 = box
     crop = frame[y1:y2, x1:x2]
@@ -464,181 +557,6 @@ def crop_for_facemesh(frame, box):
         return None
 
     crop_rgb = cv2.resize(crop, (FACE_MESH_INP, FACE_MESH_INP),
-                          interpolation=cv2.INTER_LINEAR)
-    crop_rgb = cv2.cvtColor(crop_rgb, cv2.COLOR_BGR2RGB)
-    crop_rgb = crop_rgb.astype(np.float32) / 255.0
-
-    return crop_rgb[None, ...]
-
-def generate_blazepose_anchors(input_size=128):
-    """Generate anchors for BlazePose detector (128x128 input).
-
-    For 896 total anchors, we need:
-    Stride 8: 16x16 grid with 2 scales = 512
-    Stride 16: 8x8 grid with 6 scales = 384
-    Total: 512 + 384 = 896
-    """
-    strides = [8, 16]
-    anchor_scales = [[1.0, 2.0], [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]]
-
-    anchors = []
-    for stride_idx, stride in enumerate(strides):
-        grid_size = input_size // stride
-        scales = anchor_scales[stride_idx]
-
-        for y in range(grid_size):
-            for x in range(grid_size):
-                for scale in scales:
-                    cx = (x + 0.5) / grid_size
-                    cy = (y + 0.5) / grid_size
-                    anchor_w = anchor_h = scale / input_size * stride
-                    anchors.append([cx, cy, anchor_w, anchor_h])
-
-    return np.array(anchors, dtype=np.float32)
-
-def decode_pose_detections(outputs, anchors, W, H, score_thresh=0.5):
-    """Decode BlazePose detector outputs to bounding boxes using anchors.
-
-    Args:
-        outputs: Model outputs [classificators, regressors]
-        anchors: Anchor boxes (896, 4) - [cx, cy, w, h] in normalized coords
-        W: Frame width
-        H: Frame height
-        score_thresh: Score threshold
-
-    Returns:
-        Array of boxes in xyxy format with scores [x1, y1, x2, y2, score]
-    """
-    if len(outputs) < 2:
-        return np.array([])
-
-    # BlazePose detector outputs: [classificators, regressors]
-    # outputs[0]: (1, 896, 1) - confidence scores
-    # outputs[1]: (1, 896, 12) - box offsets and keypoints
-
-    classificators = outputs[0][0]  # Shape: (896, 1)
-    regressors = outputs[1][0]  # Shape: (896, 12)
-
-    # Extract scores
-    scores = classificators.flatten()  # Shape: (896,)
-
-    # Apply sigmoid if needed
-    if scores.min() < 0.0 or scores.max() > 1.0:
-        logits = np.clip(scores, -50.0, 50.0)
-        scores = 1.0 / (1.0 + np.exp(-logits))
-
-    # Filter by score threshold
-    mask = scores >= score_thresh
-    if not mask.any():
-        return np.array([])
-
-    # Apply anchor-based decoding (similar to BlazePalm)
-    # Extract box offsets (first 4 values are offsets to anchor positions)
-    offsets = regressors[:, :4]
-
-    # Get anchor positions
-    anchor_cx = anchors[:, 0]
-    anchor_cy = anchors[:, 1]
-    anchor_w = anchors[:, 2]
-    anchor_h = anchors[:, 3]
-
-    # Scale factor for offsets (128x128 input)
-    scale_x = scale_y = 1.0 / 128.0
-
-    # Decode box centers and sizes
-    pred_cx = np.clip(anchor_cx + offsets[:, 0] * scale_x, 0, 1)
-    pred_cy = np.clip(anchor_cy + offsets[:, 1] * scale_y, 0, 1)
-    pred_w = np.clip(offsets[:, 2] * scale_x, 0.01, 1)
-    pred_h = np.clip(offsets[:, 3] * scale_y, 0.01, 1)
-
-    # Filter by score threshold
-    pred_cx = pred_cx[mask]
-    pred_cy = pred_cy[mask]
-    pred_w = pred_w[mask]
-    pred_h = pred_h[mask]
-    scores = scores[mask]
-
-    if len(scores) == 0:
-        return np.array([])
-
-    # Convert from center format to corner format in pixel coordinates
-    x1 = np.clip((pred_cx - pred_w/2.0) * W, 0, W - 1).astype(int)
-    y1 = np.clip((pred_cy - pred_h/2.0) * H, 0, H - 1).astype(int)
-    x2 = np.clip((pred_cx + pred_w/2.0) * W, 0, W - 1).astype(int)
-    y2 = np.clip((pred_cy + pred_h/2.0) * H, 0, H - 1).astype(int)
-
-    # Filter out invalid boxes (too small)
-    valid_mask = (x2 > x1 + 10) & (y2 > y1 + 10)
-    if not valid_mask.any():
-        return np.array([])
-
-    x1 = x1[valid_mask]
-    y1 = y1[valid_mask]
-    x2 = x2[valid_mask]
-    y2 = y2[valid_mask]
-    scores = scores[valid_mask]
-
-    # Stack into [x1, y1, x2, y2, score] format
-    detections = np.stack([x1, y1, x2, y2, scores], axis=1)
-    return detections
-
-def expand_pose_box(box, W, H, scale=1.25):
-    """Expand pose detection box for landmark model input.
-
-    Args:
-        box: [x1, y1, x2, y2]
-        W: Frame width
-        H: Frame height
-        scale: Expansion factor
-
-    Returns:
-        Expanded box [x1, y1, x2, y2]
-    """
-    x1, y1, x2, y2 = box
-    cx = (x1 + x2) / 2
-    cy = (y1 + y2) / 2
-    w = x2 - x1
-    h = y2 - y1
-
-    size = max(w, h)
-    new_size = size * scale
-
-    new_x1 = max(0, int(cx - new_size / 2))
-    new_y1 = max(0, int(cy - new_size / 2))
-    new_x2 = min(W, int(cx + new_size / 2))
-    new_y2 = min(H, int(cy + new_size / 2))
-
-    # Make square
-    crop_w = new_x2 - new_x1
-    crop_h = new_y2 - new_y1
-
-    if crop_w > crop_h:
-        diff = crop_w - crop_h
-        new_y1 = max(0, new_y1 - diff // 2)
-        new_y2 = min(H, new_y2 + diff // 2)
-    elif crop_h > crop_w:
-        diff = crop_h - crop_w
-        new_x1 = max(0, new_x1 - diff // 2)
-        new_x2 = min(W, new_x2 + diff // 2)
-
-    return [new_x1, new_y1, new_x2, new_y2]
-
-def crop_for_pose_landmark(frame, box):
-    """Crop and preprocess frame region for pose landmark model.
-
-    Args:
-        frame: Input frame
-        box: Bounding box [x1, y1, x2, y2]
-
-    Returns:
-        Preprocessed crop ready for model input
-    """
-    x1, y1, x2, y2 = box
-    crop = frame[y1:y2, x1:x2]
-    if crop.size == 0:
-        return None
-
-    crop_rgb = cv2.resize(crop, (POSE_LMK_INP, POSE_LMK_INP),
                           interpolation=cv2.INTER_LINEAR)
     crop_rgb = cv2.cvtColor(crop_rgb, cv2.COLOR_BGR2RGB)
     crop_rgb = crop_rgb.astype(np.float32) / 255.0
@@ -873,9 +791,10 @@ def main():
     parser.add_argument('--no-hands', action='store_true', help='Disable hands')
     parser.add_argument('--skelly', action='store_true', help='Enable filled face skeleton mode')
     parser.add_argument('--santa-hat', action='store_true', help='Draw Santa hats on faces')
+    parser.add_argument('--show-pose-roi', action='store_true', help='Show body detection bounding box (debug)')
     args = parser.parse_args()
 
-    global DRAW_POSE, DRAW_FACE_MESH, DRAW_HANDS, DRAW_DEBUG_INFO, SKELLY_MODE, DRAW_SANTA_HAT
+    global DRAW_POSE, DRAW_FACE_MESH, DRAW_HANDS, DRAW_DEBUG_INFO, DRAW_POSE_ROI, SKELLY_MODE, DRAW_SANTA_HAT
     if args.no_pose:
         DRAW_POSE = False
     if args.no_face:
@@ -884,6 +803,8 @@ def main():
         DRAW_HANDS = False
     if args.no_debug:
         DRAW_DEBUG_INFO = False
+    if args.show_pose_roi:
+        DRAW_POSE_ROI = True
     if args.skelly:
         SKELLY_MODE = True
     if args.santa_hat:
@@ -912,7 +833,7 @@ def main():
     hand_lmk_sess = ort_gpu_preferred(HAND_LMK_ONNX, "HandLmk", args.tensorrt)
 
     print("\n[INIT] Generating anchors...")
-    pose_anchors = generate_blazepose_anchors(POSE_DET_INP)
+    pose_anchors = generate_blazepose_anchors()
     hand_anchors = generate_blazepalm_anchors(HAND_DET_INP)
 
     print(f"\n[INIT] Starting camera {args.camera}...")
@@ -925,6 +846,7 @@ def main():
     time.sleep(1.0)
 
     fps_counter = FPSCounter()
+    canvas = None
 
     print("\n" + "="*70)
     print("Press 'q' or ESC to quit\n")
@@ -936,134 +858,88 @@ def main():
             continue
 
         H, W = frame.shape[:2]
-        canvas = np.zeros((H, W, 3), dtype=np.uint8)
+        if canvas is None or canvas.shape[:2] != (H, W):
+            canvas = np.zeros((H, W, 3), dtype=np.uint8)
+        else:
+            canvas.fill(0)
 
         t_start = time.time()
 
+        # ===== FACE DETECTION (run first) =====
+        faces = np.array([])
+        if DRAW_FACE_MESH:
+            # SCRFD preprocessing - keep original inline for correctness
+            img_face = cv2.resize(frame, (FACE_DET_INP, FACE_DET_INP), interpolation=cv2.INTER_LINEAR)
+            img_face = img_face.astype(np.float32)
+            img_face = (img_face - 127.5) / 128.0
+            img_face = np.transpose(img_face[:, :, ::-1], (2, 0, 1))[None, ...]
+
+            face_outs = face_det_sess.run(None, {face_det_sess.get_inputs()[0].name: img_face})
+
+            num_strides = 3
+            scores_list = [face_outs[i] for i in range(num_strides)]
+            bboxes_list = [face_outs[i + num_strides] for i in range(num_strides)]
+
+            faces = decode_scrfd_detections(
+                scores_list, bboxes_list,
+                frame.shape, FACE_DET_INP, FACE_SCORE_THR
+            )
+
+            if len(faces) > 0:
+                keep = nms_boxes(faces[:, :4], faces[:, 4], FACE_IOU_THR)
+                faces = faces[keep]
+                print(f"[FACE DET] Detected {len(faces)} face(s)")
+
         # ===== BODY POSE DETECTION =====
-        img_pose_det = cv2.resize(frame, (POSE_DET_INP, POSE_DET_INP),
-                                  interpolation=cv2.INTER_LINEAR)
-        img_pose_det = cv2.cvtColor(img_pose_det, cv2.COLOR_BGR2RGB)
-        img_pose_det = img_pose_det.astype(np.float32) / 255.0
-        img_pose_det = img_pose_det[None, ...]
-
-        pose_det_outs = pose_det_sess.run(None,
-            {pose_det_sess.get_inputs()[0].name: img_pose_det})
-
-        pose_boxes = decode_pose_detections(pose_det_outs, pose_anchors, W, H, POSE_DET_SCORE_THR)
-
-        # Debug: Show pose detection results (commented out for performance)
-        # print(f"\n[POSE DETECTION DEBUG] Detections found: {len(pose_boxes)}")
-        # if len(pose_boxes) > 0:
-        #     for i, box in enumerate(pose_boxes):
-        #         x1, y1, x2, y2, score = box
-        #         print(f"[POSE DETECTION DEBUG] Box {i}: ({x1:.0f}, {y1:.0f}) to ({x2:.0f}, {y2:.0f}), score: {score:.3f}")
-        #         print(f"[POSE DETECTION DEBUG] Box size: {x2-x1:.0f}x{y2-y1:.0f}")
-
-        if len(pose_boxes) > 0:
-            # Apply NMS if multiple detections
-            keep = nms_boxes(pose_boxes[:, :4], pose_boxes[:, 4], POSE_DET_IOU_THR)
-            pose_boxes = pose_boxes[keep]
-
-        # ===== BODY POSE LANDMARKS =====
+        all_pose_lmks = []
         pose_lmks = None
+        if DRAW_POSE:
+            # Stage 1: Detect person and get ROI
+            img_det = preprocess_for_detection(frame, POSE_DET_INP, norm='centered', output_format='NHWC')
 
-        if len(pose_boxes) > 0:
-            # Take the highest scoring detection
-            best_box = pose_boxes[0, :4].astype(int)
-            pose_expanded = expand_pose_box(best_box, W, H, scale=1.25)
+            pose_det_outs = pose_det_sess.run(None, {pose_det_sess.get_inputs()[0].name: img_det})
+            pose_detections = decode_pose_detections(pose_det_outs, pose_anchors, POSE_CONF_THR)
+            pose_detections = nms_pose_detections(pose_detections, iou_thresh=POSE_IOU_THR)
 
-            pose_crop = crop_for_pose_landmark(frame, pose_expanded)
+            for detection in pose_detections:
+                # Get ROI from detection
+                x1, y1, x2, y2 = get_pose_roi(detection, W, H)
 
-            if pose_crop is not None:
-                lmk_outs = pose_lmk_sess.run(None,
-                    {pose_lmk_sess.get_inputs()[0].name: pose_crop})
+                # Debug: Draw detection ROI on canvas (cyan rectangle)
+                if DRAW_POSE_ROI:
+                    cv2.rectangle(canvas, (x1, y1), (x2, y2), (255, 255, 0), 2)
 
-                # PINTO BlazePose upper body model outputs:
-                # Output 0: (1, 128, 128, 1) - heatmap/segmentation
-                # Output 1: (1, 1, 1, 1) - presence/score
-                # Output 2: (1, 124) - landmarks (31 landmarks × 4 = 124)
+                # Crop ROI and run landmark model
+                roi_crop = frame[y1:y2, x1:x2]
+                if roi_crop.size == 0:
+                    continue
 
-                # Use output 2 for landmarks
-                landmarks_out = lmk_outs[2][0]  # Shape: (124,)
+                img_pose = cv2.resize(roi_crop, (POSE_LMK_INP, POSE_LMK_INP), interpolation=cv2.INTER_LINEAR)
+                img_pose = cv2.cvtColor(img_pose, cv2.COLOR_BGR2RGB)
+                img_pose = img_pose.astype(np.float32) / 255.0
+                img_pose = img_pose[None, ...]
 
-                # Reshape to (31, 4) - each landmark has [x, y, z, visibility]
-                num_coords = landmarks_out.shape[0]
-                if num_coords == 124:  # 31 landmarks × 4
-                    landmarks_out = landmarks_out.reshape(31, 4)
-                elif num_coords == 75:  # 25 landmarks × 3
-                    landmarks_out = landmarks_out.reshape(25, 3)
-                elif num_coords == 99:  # 33 landmarks × 3
-                    landmarks_out = landmarks_out.reshape(33, 3)
-                elif num_coords == 195:  # 39 landmarks × 5
-                    landmarks_out = landmarks_out.reshape(39, 5)
-                else:
-                    landmarks_out = None
+                pose_outs = pose_lmk_sess.run(None, {pose_lmk_sess.get_inputs()[0].name: img_pose})
+                ld_3d = pose_outs[0]
+                poseflag = pose_outs[1]
 
-                # Check if we have valid landmark data
-                if landmarks_out is not None and len(landmarks_out.shape) == 2 and landmarks_out.shape[0] > 2 and landmarks_out.shape[1] >= 2:
-                    # Check if landmarks are in normalized [0,1] or pixel coordinates
-                    if landmarks_out[:, 0].max() > 2.0:
-                        # Landmarks are in pixel coordinates
-                        # Model input is 256x256, check the range to determine space
-                        max_coord = max(landmarks_out[:, 0].max(), landmarks_out[:, 1].max())
+                if poseflag[0, 0] >= POSE_CONF_THR:
+                    landmarks_flat = ld_3d[0]
+                    try:
+                        landmarks = landmarks_flat.reshape(39, 5)[:33]
 
-                        if max_coord > 150:
-                            # Likely 256x256 space
-                            landmark_space = 256.0
-                        else:
-                            # Likely 128x128 space
-                            landmark_space = 128.0
+                        pose_lmks = landmarks.copy()
+                        # Transform from 256x256 ROI space back to original frame
+                        roi_w = x2 - x1
+                        roi_h = y2 - y1
+                        pose_lmks[:, 0] = (landmarks[:, 0] / POSE_LMK_INP) * roi_w + x1
+                        pose_lmks[:, 1] = (landmarks[:, 1] / POSE_LMK_INP) * roi_h + y1
+                        all_pose_lmks.append(pose_lmks)
+                    except (ValueError, IndexError):
+                        pass
 
-                        num_landmarks = landmarks_out.shape[0]
-                        pose_lmks = np.zeros((num_landmarks, 3), dtype=np.float32)
-
-                        box_w = pose_expanded[2] - pose_expanded[0]
-                        box_h = pose_expanded[3] - pose_expanded[1]
-
-                        # Scale from landmark space to actual crop size, then add offset
-                        pose_lmks[:, 0] = (landmarks_out[:, 0].flatten() / landmark_space * box_w + pose_expanded[0])
-                        pose_lmks[:, 1] = (landmarks_out[:, 1].flatten() / landmark_space * box_h + pose_expanded[1])
-                        if landmarks_out.shape[1] > 2:
-                            pose_lmks[:, 2] = landmarks_out[:, 2].flatten()  # depth/visibility
-                    else:
-                        # Landmarks are in normalized coordinates [0, 1]
-                        num_landmarks = landmarks_out.shape[0]
-                        pose_lmks = np.zeros((num_landmarks, 3), dtype=np.float32)
-
-                        box_w = pose_expanded[2] - pose_expanded[0]
-                        box_h = pose_expanded[3] - pose_expanded[1]
-
-                        # Convert normalized coordinates to pixel coordinates
-                        pose_lmks[:, 0] = (landmarks_out[:, 0].flatten() * box_w + pose_expanded[0])
-                        pose_lmks[:, 1] = (landmarks_out[:, 1].flatten() * box_h + pose_expanded[1])
-                        if landmarks_out.shape[1] > 2:
-                            pose_lmks[:, 2] = landmarks_out[:, 2].flatten()  # depth/visibility
-                else:
-                    pose_lmks = None
-
-        # ===== FACE DETECTION =====
-        img_face = cv2.resize(frame, (FACE_DET_INP, FACE_DET_INP), interpolation=cv2.INTER_LINEAR)
-        img_face = img_face.astype(np.float32)
-        img_face = (img_face - 127.5) / 128.0
-        img_face = np.transpose(img_face[:, :, ::-1], (2, 0, 1))[None, ...]
-
-        face_outs = face_det_sess.run(None, {face_det_sess.get_inputs()[0].name: img_face})
-
-        num_strides = 3
-        scores_list = [face_outs[i] for i in range(num_strides)]
-        bboxes_list = [face_outs[i + num_strides] for i in range(num_strides)]
-        kpss_list = [face_outs[i + 2*num_strides] if i + 2*num_strides < len(face_outs)
-                     else None for i in range(num_strides)]
-
-        faces = decode_scrfd_detections(
-            scores_list, bboxes_list, kpss_list,
-            frame.shape, FACE_DET_INP, FACE_SCORE_THR
-        )
-
-        if len(faces) > 0:
-            keep = nms_boxes(faces[:, :4], faces[:, 4], FACE_IOU_THR)
-            faces = faces[keep]
+            # For backward compatibility, set pose_lmks to first person if any detected
+            pose_lmks = all_pose_lmks[0] if len(all_pose_lmks) > 0 else None
 
         # ===== FACEMESH =====
         face_meshes = []
@@ -1106,31 +982,27 @@ def main():
                     face_meshes.append(mesh_px)
 
         # ===== HAND DETECTION =====
-        img_hand = cv2.resize(frame, (HAND_DET_INP, HAND_DET_INP),
-                             interpolation=cv2.INTER_LINEAR)[:, :, ::-1]
-        img_hand = img_hand.astype(np.float32) / 255.0
-        inp_hand = np.transpose(img_hand, (2, 0, 1))[None, ...]
-
-        hand_outs = hand_det_sess.run(None, {hand_det_sess.get_inputs()[0].name: inp_hand})
-        boxes_raw, scores = decode_palm_with_anchors(hand_outs, hand_anchors)
-
-        mask = scores >= HAND_SCORE_THR
-        boxes_raw = boxes_raw[mask]
-        scores = scores[mask]
-
         hand_boxes_xyxy = np.array([])
+        if DRAW_HANDS:
+            inp_hand = preprocess_for_detection(frame, HAND_DET_INP, norm='unit', output_format='NCHW')
 
-        if len(scores) > 0:
-            boxes_xyxy = boxes_to_xyxy(boxes_raw, W, H)
-            keep = nms_boxes(boxes_xyxy, scores, HAND_IOU_THR)
-            hand_boxes_xyxy = boxes_xyxy[keep]
+            hand_outs = hand_det_sess.run(None, {hand_det_sess.get_inputs()[0].name: inp_hand})
+            boxes_raw, scores = decode_palm_with_anchors(hand_outs, hand_anchors)
 
-            if len(faces) > 0:
-                hand_keep = suppress_overlapping_detections(hand_boxes_xyxy, faces[:, :4], iou_threshold=0.2)
-                hand_boxes_xyxy = hand_boxes_xyxy[hand_keep]
+            mask = scores >= HAND_SCORE_THR
+            boxes_raw = boxes_raw[mask]
+            scores = scores[mask]
 
-        # ===== HAND LANDMARKS =====
-        if len(hand_boxes_xyxy) > 0:
+            if len(scores) > 0:
+                boxes_xyxy = boxes_to_xyxy(boxes_raw, W, H)
+                keep = nms_boxes(boxes_xyxy, scores, HAND_IOU_THR)
+                hand_boxes_xyxy = boxes_xyxy[keep]
+
+                if len(faces) > 0:
+                    hand_keep = suppress_overlapping_detections(hand_boxes_xyxy, faces[:, :4], iou_threshold=0.2)
+                    hand_boxes_xyxy = hand_boxes_xyxy[hand_keep]
+
+            # ===== HAND LANDMARKS =====
             for b in hand_boxes_xyxy:
                 b_expanded = expand_box_for_hand(b, W, H, scale=2.6, shift_y=-0.1)
 
@@ -1164,59 +1036,39 @@ def main():
                     pts_pixel[:, 0] = pts_normalized[:, 0] * box_w + b_expanded[0]
                     pts_pixel[:, 1] = pts_normalized[:, 1] * box_h + b_expanded[1]
 
-                    # DEBUG: Print hand wrist position only if body detected
-                    if pose_lmks is not None:
-                        hand_wrist_x = pts_pixel[0, 0]
-                        hand_wrist_y = pts_pixel[0, 1]
+                    # Draw hand landmarks
+                    for connection in HAND_CONNECTIONS:
+                        start_idx, end_idx = connection
+                        if start_idx < len(pts_pixel) and end_idx < len(pts_pixel):
+                            start_pt = tuple(pts_pixel[start_idx].astype(int))
+                            end_pt = tuple(pts_pixel[end_idx].astype(int))
 
-                        print(f"[HAND DEBUG] Hand detection box: ({b[0]}, {b[1]}) to ({b[2]}, {b[3]})")
-                        print(f"[HAND DEBUG] Expanded box: ({b_expanded[0]}, {b_expanded[1]}) to ({b_expanded[2]}, {b_expanded[3]})")
-                        print(f"[HAND DEBUG] Wrist (landmark 0): x={hand_wrist_x:.1f}, y={hand_wrist_y:.1f}")
-                        print(f"[HAND DEBUG] Middle finger tip (landmark 12): x={pts_pixel[12, 0]:.1f}, y={pts_pixel[12, 1]:.1f}")
+                            if (0 <= start_pt[0] < W and 0 <= start_pt[1] < H and
+                                0 <= end_pt[0] < W and 0 <= end_pt[1] < H):
+                                cv2.line(canvas, start_pt, end_pt, HAND_LINE_COLOR, HAND_LINE_WIDTH)
 
-                        # Compare to body wrists
-                        left_wrist_dist = np.sqrt((hand_wrist_x - pose_lmks[15, 0])**2 + (hand_wrist_y - pose_lmks[15, 1])**2)
-                        right_wrist_dist = np.sqrt((hand_wrist_x - pose_lmks[16, 0])**2 + (hand_wrist_y - pose_lmks[16, 1])**2)
+                    for i, (x, y) in enumerate(pts_pixel.astype(int)):
+                        if 0 <= x < W and 0 <= y < H:
+                            if i == 0:
+                                cv2.circle(canvas, (x, y), HAND_DOT_SIZE + 2, HAND_WRIST_COLOR, -1)
+                            elif i in [4, 8, 12, 16, 20]:
+                                cv2.circle(canvas, (x, y), HAND_DOT_SIZE + 1, HAND_FINGERTIP_COLOR, -1)
+                            else:
+                                cv2.circle(canvas, (x, y), HAND_DOT_SIZE, HAND_DOT_COLOR, -1)
 
-                        closer_wrist = "LEFT" if left_wrist_dist < right_wrist_dist else "RIGHT"
-                        closer_dist = min(left_wrist_dist, right_wrist_dist)
+        # ===== DRAW POSE (all detected people) =====
+        if DRAW_POSE and len(all_pose_lmks) > 0:
+            for person_lmks in all_pose_lmks:
+                draw_landmarks(canvas, person_lmks, POSE_CONNECTIONS,
+                             POSE_DOT_COLOR, POSE_LINE_COLOR,
+                             POSE_DOT_SIZE, POSE_LINE_WIDTH, draw_dots=False)
 
-                        print(f"[COMPARISON] Distance to body LEFT wrist (15): {left_wrist_dist:.1f} pixels")
-                        print(f"[COMPARISON] Distance to body RIGHT wrist (16): {right_wrist_dist:.1f} pixels")
-                        print(f"[COMPARISON] Closer to {closer_wrist} wrist by {closer_dist:.1f} pixels\n")
-
-                    if DRAW_HANDS:
-                        for connection in HAND_CONNECTIONS:
-                            start_idx, end_idx = connection
-                            if start_idx < len(pts_pixel) and end_idx < len(pts_pixel):
-                                start_pt = tuple(pts_pixel[start_idx].astype(int))
-                                end_pt = tuple(pts_pixel[end_idx].astype(int))
-
-                                if (0 <= start_pt[0] < W and 0 <= start_pt[1] < H and
-                                    0 <= end_pt[0] < W and 0 <= end_pt[1] < H):
-                                    cv2.line(canvas, start_pt, end_pt, HAND_LINE_COLOR, HAND_LINE_WIDTH)
-
-                        for i, (x, y) in enumerate(pts_pixel.astype(int)):
-                            if 0 <= x < W and 0 <= y < H:
-                                if i == 0:
-                                    cv2.circle(canvas, (x, y), HAND_DOT_SIZE + 2, HAND_WRIST_COLOR, -1)
-                                elif i in [4, 8, 12, 16, 20]:
-                                    cv2.circle(canvas, (x, y), HAND_DOT_SIZE + 1, HAND_FINGERTIP_COLOR, -1)
-                                else:
-                                    cv2.circle(canvas, (x, y), HAND_DOT_SIZE, HAND_DOT_COLOR, -1)
-
-        # ===== DRAW POSE =====
-        if DRAW_POSE and pose_lmks is not None:
-            draw_landmarks(canvas, pose_lmks, POSE_CONNECTIONS,
-                         POSE_DOT_COLOR, POSE_LINE_COLOR,
-                         POSE_DOT_SIZE, POSE_LINE_WIDTH, draw_dots=False)
-
-            # Draw upper body keypoints only (11-22)
-            for i in range(11, 23):
-                if i < len(pose_lmks):
-                    x, y = int(pose_lmks[i, 0]), int(pose_lmks[i, 1])
-                    if 0 <= x < W and 0 <= y < H:
-                        cv2.circle(canvas, (x, y), POSE_DOT_SIZE, POSE_DOT_COLOR, -1)
+                # Draw upper body keypoints only (11-22)
+                for i in range(11, 23):
+                    if i < len(person_lmks):
+                        x, y = int(person_lmks[i, 0]), int(person_lmks[i, 1])
+                        if 0 <= x < W and 0 <= y < H:
+                            cv2.circle(canvas, (x, y), POSE_DOT_SIZE, POSE_DOT_COLOR, -1)
 
         # ===== DRAW FACE MESH =====
         if DRAW_FACE_MESH and len(face_meshes) > 0:
@@ -1268,8 +1120,8 @@ def main():
 
         if DRAW_DEBUG_INFO:
             detections = []
-            if pose_lmks is not None:
-                detections.append("Body")
+            if len(all_pose_lmks) > 0:
+                detections.append(f"Body({len(all_pose_lmks)})")
             if len(face_meshes) > 0:
                 detections.append(f"Face({len(face_meshes)})")
             if len(hand_boxes_xyxy) > 0:
