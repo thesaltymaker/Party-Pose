@@ -148,8 +148,7 @@ Hand detections that overlap with face regions are automatically suppressed to p
 ## Performance
 
 Typical performance on NVIDIA GPUs:
-- GTX 1080: ~30 FPS at 1080p
-- RTX 3070: ~45 FPS at 1080p
+- RTX 4070 mobile: ~31 FPS at 1080p
 - With TensorRT: +20-30% improvement
 
 ## Troubleshooting

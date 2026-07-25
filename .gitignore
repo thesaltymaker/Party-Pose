@@ -53,6 +53,7 @@ trt_cache/
 models/*.onnx
 models/*.engine
 models/*.tar.gz
+models/*.tar
 
 # Test files
 test.py
