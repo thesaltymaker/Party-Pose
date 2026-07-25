@@ -50,7 +50,12 @@ class ModelManager:
             'cudnn_conv_algo_search': 'EXHAUSTIVE',
             'do_copy_in_default_stream': True,
         }
-        trt_provider_opts = {'trt_max_workspace_size': 2 * 1024 ** 3, 'trt_fp16_enable': True}
+        trt_provider_opts = {
+            'trt_max_workspace_size': 2 * 1024 ** 3,
+            'trt_fp16_enable': True,
+            'trt_engine_cache_enable': True,
+            'trt_engine_cache_path': str(self.models_dir / 'trt_cache'),
+        }
 
         # Provider selection logic
         if self.platform == "orin" and 'TensorrtExecutionProvider' in ort.get_available_providers():
