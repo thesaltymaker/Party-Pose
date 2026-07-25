@@ -6,7 +6,7 @@ from pathlib import Path
 MODEL_NAMES = ["person_detector", "face_landmarks", "face_blendshapes", "hand_landmarks", "pose_landmarks"]
 
 
-def run_model_test_with_timeout(name: str, timeout_seconds: int = 120) -> dict:
+def run_model_test_with_timeout(name: str, timeout_seconds: int = 300) -> dict:
     """Run model test with timeout and parse result."""
     worker = str(Path(__file__).parent / "check_tensorrt_compat_worker.py")
     try:

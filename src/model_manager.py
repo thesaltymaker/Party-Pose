@@ -18,6 +18,14 @@ class ModelManager:
         pose_landmarks: "pose_landmarks_detector_opset15.onnx",
     }
 
+    _TRT_MODEL_FILE_OVERRIDES = {
+        person_detector: "yolox_n_body_head_hand_post_0461_0.4428_1x3x256x320_float32.shapeinferred.onnx",
+    }
+
+    # person_detector's baked-in NonMaxSuppression op hangs (300s+) during TensorRT
+    # engine build on the Orin. Skip TensorRT for it, use CUDA/CPU fallback instead.
+    _TRT_EXCLUDED_MODELS = {person_detector}
+
     def __init__(self, models_dir: Path, platform: str = "laptop") -> None:
         self.models_dir = models_dir
         self.platform = platform
@@ -38,7 +46,9 @@ class ModelManager:
         if name in self._sessions:
             return self._sessions[name]
 
-        model_path = self.models_dir / self._MODEL_FILES[name]
+        model_path = (self.models_dir / self._TRT_MODEL_FILE_OVERRIDES[name]) \
+                     if self.platform == "orin" and name in self._TRT_MODEL_FILE_OVERRIDES \
+                     else self.models_dir / self._MODEL_FILES[name]
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.enable_mem_pattern = True
@@ -58,7 +68,7 @@ class ModelManager:
         }
 
         # Provider selection logic
-        if self.platform == "orin" and 'TensorrtExecutionProvider' in ort.get_available_providers():
+        if self.platform == "orin" and name not in self._TRT_EXCLUDED_MODELS and 'TensorrtExecutionProvider' in ort.get_available_providers():
             providers = [('TensorrtExecutionProvider', trt_provider_opts)]
             if 'CUDAExecutionProvider' in ort.get_available_providers():
                 providers.append(('CUDAExecutionProvider', cuda_provider_opts))
