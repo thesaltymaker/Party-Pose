@@ -24,3 +24,17 @@ context. Archived source: `Party-Pose.orin_monolith.py`.
   and require per-node CPU/CUDA fallback. Not yet verified which of the five models
   (`person_detector`, `face_landmarks`, `face_blendshapes`, `hand_landmarks`, `pose_landmarks`)
   actually work correctly under TensorRT on the Orin.
+
+- **First-run cold start after clearing `models/trt_cache/`**: building a fresh TensorRT
+  engine can take several minutes per model on the Orin Nano (not just the sub-second `cold`
+  timings in the compatibility table above — those measure `session.run()` after the session,
+  and thus the engine, already exists). Symptom if you hit this: `poser.py` opens its window,
+  renders exactly one frame, then appears to freeze for minutes with no further output — this
+  looks identical to a genuine hang (like the `person_detector` NMS one that's already
+  excluded via `_TRT_EXCLUDED_MODELS`) but isn't one; it resolves on its own once the engine
+  finishes building. Confirmed by letting it run: after ~30 minutes of cumulative first-use
+  across `check_tensorrt_compat.py` runs and a live `poser.py` session, the cache warmed and
+  `poser.py --platform orin --fps` ran a clean 60s at a steady 30-31 FPS. If you clear
+  `trt_cache/` again, run `check_tensorrt_compat.py` once first (it has its own per-model
+  subprocess timeout, so it won't look hung) to pre-warm the cache before using the
+  interactive app.

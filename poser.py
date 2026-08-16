@@ -133,6 +133,9 @@ def main():
             fps_counter.tick()
             if config.show_fps:
                 renderer.draw_fps(cpu_frame, fps_counter.get_fps())
+                fps_counter._print_counter = getattr(fps_counter, "_print_counter", 0) + 1
+                if fps_counter._print_counter % 60 == 0:
+                    print(f"[FPS] {fps_counter.get_fps():.1f}", flush=True)
 
             cv2.imshow('Poser', cpu_frame)
 
