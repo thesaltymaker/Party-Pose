@@ -151,6 +151,12 @@ Typical performance on NVIDIA GPUs:
 - RTX 4070 mobile: ~31 FPS at 1080p
 - With TensorRT: +20-30% improvement
 
+Jetson Orin Nano Super (`python poser.py --platform orin --fps`, 1080p CSI camera, all models on TensorRT):
+- ~30 FPS with one detected person, 20–25 FPS with two. Each extra detected body costs about 9 ms/frame.
+- Needs `sudo jetson_clocks` (resets on reboot). Without it the GPU governor downclocks to about 408 MHz and inference runs about 2× slower.
+- `--fps` also prints per-stage timings (`[STAGES ms/frame]`), detections per frame and each model's execution provider (`[PROVIDERS]`).
+- Benchmark tools: `tools/orin_bench/`. Details: `docs/orin-fps-issue-2.md`.
+
 ## Troubleshooting
 
 **Camera not detected:**
@@ -171,6 +177,7 @@ python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
 - Reduce resolution: `--width 1280 --height 720`
 - Disable unused features: `--no-hands` or `--no-face`
 - Enable TensorRT: `--tensorrt`
+- Jetson Orin: run `sudo jetson_clocks`, then check `[STAGES ms/frame]` and `[PROVIDERS]` in the `--fps` output (see `tools/orin_bench/README.md`)
 
 ## License
 

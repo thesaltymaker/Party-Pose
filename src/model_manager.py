@@ -22,9 +22,16 @@ class ModelManager:
         person_detector: "yolox_n_body_head_hand_post_0461_0.4428_1x3x256x320_float32.shapeinferred.onnx",
     }
 
-    # person_detector's baked-in NonMaxSuppression op hangs (300s+) during TensorRT
-    # engine build on the Orin. Skip TensorRT for it, use CUDA/CPU fallback instead.
-    _TRT_EXCLUDED_MODELS = {person_detector}
+    # person_detector's baked-in NMS tail fails TensorRT engine build on the Orin
+    # ("Layers missing empty tensor support"). None of these op types appear in its
+    # YOLOX backbone, so excluding them keeps only the NMS tail on CUDA/CPU while the
+    # backbone runs in TensorRT. min_subgraph_size keeps tiny leftover fragments off TRT.
+    _TRT_EXTRA_OPTS = {
+        person_detector: {
+            'trt_op_types_to_exclude': 'NonMaxSuppression,NonZero,RoiAlign,Cast,Squeeze,Shape,Relu,Gather,GatherND',
+            'trt_min_subgraph_size': 20,
+        },
+    }
 
     def __init__(self, models_dir: Path, platform: str = "laptop") -> None:
         self.models_dir = models_dir
@@ -65,10 +72,11 @@ class ModelManager:
             'trt_fp16_enable': True,
             'trt_engine_cache_enable': True,
             'trt_engine_cache_path': str(self.models_dir / 'trt_cache'),
+            **self._TRT_EXTRA_OPTS.get(name, {}),
         }
 
         # Provider selection logic
-        if self.platform == "orin" and name not in self._TRT_EXCLUDED_MODELS and 'TensorrtExecutionProvider' in ort.get_available_providers():
+        if self.platform == "orin" and 'TensorrtExecutionProvider' in ort.get_available_providers():
             providers = [('TensorrtExecutionProvider', trt_provider_opts)]
             if 'CUDAExecutionProvider' in ort.get_available_providers():
                 providers.append(('CUDAExecutionProvider', cuda_provider_opts))

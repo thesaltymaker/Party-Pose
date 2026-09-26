@@ -247,6 +247,8 @@ CUDAExecutionProvider options:
 - `cudnn_conv_algo_search`: EXHAUSTIVE — one-time search at session creation; best algorithm is cached
 - `do_copy_in_default_stream`: True — synchronizes copies on the default CUDA stream to avoid race conditions
 
+On `--platform orin`, TensorrtExecutionProvider is placed first (FP16, engine cache in `models/trt_cache`), with CUDA and CPU as fallbacks. Per-model TensorRT options live in `ModelManager._TRT_EXTRA_OPTS`. The person detector uses them to keep its NMS post-processing off TensorRT while the backbone runs in TensorRT (see `docs/orin-fps-issue-2.md`).
+
 ### Actual Model Tensor Specifications
 
 All models use **NHWC float32** input in **RGB** channel order, normalized to **[0.0, 1.0]**.
