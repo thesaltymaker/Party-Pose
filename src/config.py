@@ -16,6 +16,8 @@ class Config:
     face_expressions: bool = False
     black_bg: bool = False
     platform: str = "laptop"
+    dump_detections: str = ""  # debug: directory for annotated frames + detection JSON ("" = off)
+    dump_every: float = 2.0
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -45,6 +47,8 @@ def parse_args() -> Config:
     parser.add_argument("--fps", action="store_true", help="Show FPS")
     parser.add_argument("--face-expressions", action="store_true", help="Enable face expressions detection")
     parser.add_argument("--black-bg", action="store_true", help="Black background — show only landmarks and skeleton")
+    parser.add_argument("--dump-detections", default="", metavar="DIR", help="Save annotated frames + detection scores as JSON to DIR")
+    parser.add_argument("--dump-every", type=float, default=2.0, help="Seconds between dumps (with --dump-detections)")
     parser.set_defaults(face=True, body=True, hands=True)
     # Platform argument
     parser.add_argument(
@@ -75,4 +79,6 @@ def parse_args() -> Config:
         face_expressions=args.face_expressions,
         black_bg=args.black_bg,
         platform=resolved_platform,
+        dump_detections=args.dump_detections,
+        dump_every=args.dump_every,
     )

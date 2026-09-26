@@ -1,0 +1,18 @@
+#!/bin/sh
+#
+# Take an Orin snapshot (tools/orin_setup/snapshot.sh) before every push.
+# Enable once per clone: git config core.hooksPath tools/git-hooks
+#
+# Never blocks the push: if the Orin is unreachable or the snapshot fails, it warns and continues.
+
+ORIN=${ORIN_HOST:-thesa-orin1}
+SNAP='sh ~/Projects/Party-Pose/tools/orin_setup/snapshot.sh'
+
+echo "pre-push: snapshotting $ORIN ..." >&2
+if [ "$(hostname)" = "$ORIN" ]; then
+    sh -c "$SNAP" >&2
+else
+    ssh -o ConnectTimeout=5 -o BatchMode=yes "$ORIN" "$SNAP" >&2
+fi || echo "pre-push: WARNING snapshot failed or $ORIN unreachable; push continues" >&2
+
+exit 0

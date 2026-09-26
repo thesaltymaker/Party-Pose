@@ -51,6 +51,7 @@ class FaceResult:
     landmarks: List[Landmark]
     blendshapes: Optional[np.ndarray] = None
     person_id: int = 0
+    presence: float = 1.0
 
 @dataclass
 class HandResult:
@@ -68,6 +69,7 @@ class HandResult:
     handedness: str = 'Right'
     handedness_score: float = 0.0
     person_id: int = 0
+    presence: float = 0.0
 
 @dataclass
 class BodyResult:

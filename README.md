@@ -157,6 +157,20 @@ Jetson Orin Nano Super (`python poser.py --platform orin --fps`, 1080p CSI camer
 - `--fps` also prints per-stage timings (`[STAGES ms/frame]`), detections per frame and each model's execution provider (`[PROVIDERS]`).
 - Benchmark tools: `tools/orin_bench/`. Details: `docs/orin-fps-issue-2.md`.
 
+## Jetson Orin setup and deployment
+
+- The Orin runs the modular app, `poser.py` with `src/`. Its Python environment is built by `tools/orin_setup/bootstrap_env.sh`, not by `requirements.txt`. See `tools/orin_setup/README.md`.
+- Deploy only through git: push from the laptop, `git pull` on the Orin. Never copy the repo directory onto the Orin.
+- Enable the pre-push hook once per clone (`git config core.hooksPath tools/git-hooks`). Every push then takes a snapshot of the Orin's environment, models and camera settings first.
+
+## Debugging detections
+
+```bash
+python poser.py --platform orin --fps --dump-detections /tmp/ppdump --dump-every 1
+```
+
+Every `--dump-every` seconds this saves the frame with the overlay and the detector boxes and scores drawn, the raw frame, and a JSON of detector scores and landmark presence scores. It was used to find and fix the false positives in issue #3; see `docs/orin-false-positives-issue-3.md`.
+
 ## Troubleshooting
 
 **Camera not detected:**

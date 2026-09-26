@@ -16,6 +16,10 @@ class FaceProcessor:
 
     LANDMARK_W = 256
     LANDMARK_H = 256
+    # Face landmark model's own face score (sigmoid of Identity_1). Measured on Orin dumps
+    # (issue #3): with the unpadded head crop, frontal faces score well above 0.5; the black
+    # ball, fists, lampshade and backs of heads score below it.
+    PRESENCE_THRESHOLD = 0.5
 
     def __init__(self, model_manager: ModelManager, enable_blendshapes: bool = False) -> None:
         self.model_manager = model_manager
@@ -31,12 +35,15 @@ class FaceProcessor:
     ) -> Optional[FaceResult]:
         roi_arr, crop_bbox = Preprocessor.crop_roi_nhwc(
             frame_gpu, head_bbox, self.LANDMARK_W, self.LANDMARK_H,
-            pad_fraction=0.25, frame_w=frame_w, frame_h=frame_h,
+            pad_fraction=0.0, frame_w=frame_w, frame_h=frame_h,
         )
 
         session = self.model_manager.get_session('face_landmarks')
-        landmarks_raw = session.run(['Identity'], {'input_12': roi_arr})[0]
+        landmarks_raw, presence_logit = session.run(['Identity', 'Identity_1'], {'input_12': roi_arr})
         landmarks_raw = landmarks_raw.reshape(-1, 478, 3)
+        presence = float(1.0 / (1.0 + np.exp(-np.clip(presence_logit.flat[0], -50, 50))))
+        if presence < self.PRESENCE_THRESHOLD:
+            return None
 
         landmarks = Preprocessor.to_image_space(
             landmarks_raw[0], self.LANDMARK_W, self.LANDMARK_H,
@@ -47,7 +54,7 @@ class FaceProcessor:
         if self.enable_blendshapes and landmarks_raw.size > 0:
             blendshapes = self._run_blendshapes(landmarks_raw[0])
 
-        return FaceResult(bbox=head_bbox, landmarks=landmarks, blendshapes=blendshapes)
+        return FaceResult(bbox=head_bbox, landmarks=landmarks, blendshapes=blendshapes, presence=presence)
 
     def _run_blendshapes(self, landmarks_raw: np.ndarray) -> Optional[np.ndarray]:
         if not CANONICAL_BLENDSHAPE_INDICES:
