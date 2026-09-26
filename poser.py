@@ -60,6 +60,23 @@ def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies,
     cv2.imwrite(str(dump_dir / f'frame_{n:04d}.jpg'), out)
 
 
+def _drop_nested_bodies(body_boxes: List[BoundingBox], max_inside: float = 0.5) -> List[BoundingBox]:
+    """Drop body boxes that lie mostly (>= max_inside of their area) inside a higher-scoring body box.
+
+    The detector's NMS keeps these because their IoU with the bigger box is low; on the Orin they were
+    a lamp beside a person and duplicate boxes on a raised arm.
+    """
+    def inside(a: BoundingBox, b: BoundingBox) -> float:
+        ix = max(0.0, min(a.x + a.w, b.x + b.w) - max(a.x, b.x))
+        iy = max(0.0, min(a.y + a.h, b.y + b.h) - max(a.y, b.y))
+        return ix * iy / (a.w * a.h)
+
+    return [
+        a for a in body_boxes
+        if not any(b.confidence > a.confidence and inside(a, b) >= max_inside for b in body_boxes)
+    ]
+
+
 def main():
     config = parse_args()
     models_dir = Path(__file__).parent / 'models'
@@ -127,6 +144,7 @@ def main():
             if person_proc:
                 t = time.perf_counter()
                 detections = person_proc.process(frame_gpu, frame_w, frame_h)
+                detections.body_boxes = _drop_nested_bodies(detections.body_boxes)
                 stage_ms['person'] += (time.perf_counter() - t) * 1000
                 counts['bodies'] += len(detections.body_boxes)
                 counts['heads'] += len(detections.head_boxes)

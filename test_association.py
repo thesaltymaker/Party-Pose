@@ -1,4 +1,4 @@
-from poser import _find_head_for_body
+from poser import _find_head_for_body, _drop_nested_bodies
 from src.types import BoundingBox
 
 
@@ -24,3 +24,16 @@ def test_highest_confidence_head_inside_wins():
     low = _box(10, 10, 50, 50, conf=0.4)
     high = _box(100, 10, 50, 50, conf=0.8)
     assert _find_head_for_body(body, [low, high]) is high
+
+
+def test_body_mostly_inside_higher_scoring_body_is_dropped():
+    # Issue #3 (Orin dump 3f frame 91): a 0.31 box on the lamp beside a person, 67% inside the person's box.
+    person = _box(1140, 340, 380, 680, conf=0.83)
+    lamp = _box(1080, 340, 130, 660, conf=0.31)
+    assert _drop_nested_bodies([lamp, person]) == [person]
+
+
+def test_separate_bodies_are_kept():
+    a = _box(100, 100, 200, 400, conf=0.9)
+    b = _box(600, 100, 200, 400, conf=0.4)
+    assert _drop_nested_bodies([a, b]) == [a, b]
