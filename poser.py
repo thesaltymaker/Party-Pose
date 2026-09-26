@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 from typing import List, Optional
 import cv2
@@ -80,39 +81,59 @@ def main():
     display_h = config.height if config.height > 0 else capture.height
     scale_display = (display_w != capture.width or display_h != capture.height)
 
+    # Per-stage timing (ms), accumulated and printed with [FPS] when --fps is set
+    stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'render')}
+    counts = {k: 0 for k in ('bodies', 'heads', 'hands', 'faces_run', 'hands_run')}
+
     try:
         while True:
+            t = time.perf_counter()
             frame_gpu = capture.read_frame()
             frame_w, frame_h = frame_gpu.size()
+            stage_ms['capture'] += (time.perf_counter() - t) * 1000
 
             all_face_results: List[FaceResult] = []
             all_hand_results: List[HandResult] = []
             all_body_results: List[BodyResult] = []
 
             if person_proc:
+                t = time.perf_counter()
                 detections = person_proc.process(frame_gpu, frame_w, frame_h)
+                stage_ms['person'] += (time.perf_counter() - t) * 1000
+                counts['bodies'] += len(detections.body_boxes)
+                counts['heads'] += len(detections.head_boxes)
+                counts['hands'] += len(detections.hand_boxes)
 
                 for person_id, body_bbox in enumerate(detections.body_boxes):
                     head_bbox    = _find_head_for_body(body_bbox, detections.head_boxes)
                     person_hands = _find_hands_for_body(body_bbox, detections.hand_boxes)
 
                     if face_proc and head_bbox is not None:
+                        t = time.perf_counter()
                         face = face_proc.process(frame_gpu, head_bbox, frame_w, frame_h, config.mirror)
+                        stage_ms['face'] += (time.perf_counter() - t) * 1000
+                        counts['faces_run'] += 1
                         if face is not None:
                             face.person_id = person_id
                             all_face_results.append(face)
 
                     if hand_proc and person_hands:
+                        t = time.perf_counter()
                         for hand in hand_proc.process(frame_gpu, person_hands, frame_w, frame_h, config.mirror):
                             hand.person_id = person_id
                             all_hand_results.append(hand)
+                        stage_ms['hands'] += (time.perf_counter() - t) * 1000
+                        counts['hands_run'] += len(person_hands)
 
                     if body_proc:
+                        t = time.perf_counter()
                         body = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror)
+                        stage_ms['body'] += (time.perf_counter() - t) * 1000
                         if body is not None:
                             body.person_id = person_id
                             all_body_results.append(body)
 
+            t_render = time.perf_counter()
             # Single GPU→CPU download for all drawing
             cpu_frame = frame_gpu.download()
             if config.black_bg:
@@ -141,6 +162,17 @@ def main():
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+            stage_ms['render'] += (time.perf_counter() - t_render) * 1000
+
+            if config.show_fps and fps_counter._print_counter % 60 == 0:
+                n = 60
+                print('[STAGES ms/frame] ' + ' '.join(f'{k}={v / n:.1f}' for k, v in stage_ms.items())
+                      + ' | per frame: ' + ' '.join(f'{k}={v / n:.2f}' for k, v in counts.items()), flush=True)
+                if fps_counter._print_counter == 60:
+                    for name, sess in model_manager._sessions.items():
+                        print(f'[PROVIDERS] {name}: {sess.get_providers()}', flush=True)
+                stage_ms = dict.fromkeys(stage_ms, 0.0)
+                counts = dict.fromkeys(counts, 0)
     except KeyboardInterrupt:
         pass
     except RuntimeError as e:

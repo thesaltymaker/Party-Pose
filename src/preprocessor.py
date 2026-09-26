@@ -123,23 +123,14 @@ class Preprocessor:
         frame_h: int,
         mirror: bool = False,  # unused: frame is already flipped by video_capture
     ) -> List[Landmark]:
-        landmarks = []
-        for i in range(lms_model.shape[0]):
-            x_norm = lms_model[i, 0] / model_w
-            y_norm = lms_model[i, 1] / model_h
-            x_image = crop_bbox.x + x_norm * crop_bbox.w
-            y_image = crop_bbox.y + y_norm * crop_bbox.h
-            z = lms_model[i, 2] if lms_model.shape[1] >= 3 else 0.0
-            visibility = lms_model[i, 3] if lms_model.shape[1] >= 4 else 1.0
-            presence = lms_model[i, 4] if lms_model.shape[1] >= 5 else 1.0
-
-            landmarks.append(
-                Landmark(
-                    x=x_image,
-                    y=y_image,
-                    z=z,
-                    visibility=visibility,
-                    presence=presence
-                )
-            )
-        return landmarks
+        # Vectorized: per-element numpy scalar indexing cost ~4 ms per 478-point face on the Orin
+        n, cols = lms_model.shape[0], lms_model.shape[1]
+        xs = (crop_bbox.x + lms_model[:, 0] / model_w * crop_bbox.w).tolist()
+        ys = (crop_bbox.y + lms_model[:, 1] / model_h * crop_bbox.h).tolist()
+        zs = lms_model[:, 2].tolist() if cols >= 3 else [0.0] * n
+        vis = lms_model[:, 3].tolist() if cols >= 4 else [1.0] * n
+        pres = lms_model[:, 4].tolist() if cols >= 5 else [1.0] * n
+        return [
+            Landmark(x=x, y=y, z=z, visibility=v, presence=p)
+            for x, y, z, v, p in zip(xs, ys, zs, vis, pres)
+        ]
