@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import cv2
+import numpy as np
 import subprocess
 from typing import Tuple, Optional
 
@@ -8,6 +9,9 @@ NIGHT_GAIN_MAX = 171
 NIGHT_EXPOSURE_MAX = 683710
 NIGHT_GAIN_THRESHOLD_FRAC = 0.95
 NIGHT_EXPOSURE_THRESHOLD_FRAC = 0.5
+# Orin NoIR IMX219: per-channel BGR gain applied on top of wbmode=3, landing between
+# the wbmode=2 and wbmode=3 looks (issue #4). Stored as gain*128 for an 8-bit GPU multiply.
+ORIN_WB_GAIN_BGR = (1.145, 1.0, 0.937)
 
 
 def query_gain_exposure(device: str = "/dev/video0") -> Tuple[Optional[int], Optional[int]]:
@@ -66,7 +70,7 @@ class VideoCaptureModule:
         # Platform-specific pipeline creation
         if config.platform == "orin":
             gst_str = (
-                f"nvarguscamerasrc sensor-id={config.camera} ! "
+                f"nvarguscamerasrc sensor-id={config.camera} wbmode=3 ! "
                 f"video/x-raw(memory:NVMM), width=(int)1920, height=(int)1080, "
                 f"format=(string)NV12, framerate=(fraction)30/1 ! "
                 f"nvvidconv flip-method=0 ! "
@@ -86,6 +90,11 @@ class VideoCaptureModule:
         self.height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.mirror = config.mirror
         self._gpu_frame = cv2.cuda_GpuMat()
+        self._wb_gain = None
+        if config.platform == "orin":
+            self._wb_gain = cv2.cuda_GpuMat()
+            self._wb_gain.upload(np.full((self.height, self.width, 3),
+                                         [round(g * 128) for g in ORIN_WB_GAIN_BGR], np.uint8))
         # Initialize night mode detector for Orin platform
         self._night_mode = NightModeDetector() if config.platform == "orin" else None
 
@@ -95,6 +104,8 @@ class VideoCaptureModule:
             raise RuntimeError('Camera read failed')
 
         self._gpu_frame.upload(frame)
+        if self._wb_gain is not None:
+            cv2.cuda.multiply(self._gpu_frame, self._wb_gain, self._gpu_frame, scale=1 / 128)
         if self.mirror:
             cv2.cuda.flip(self._gpu_frame, 1, self._gpu_frame)
 
