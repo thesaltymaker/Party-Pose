@@ -1,5 +1,15 @@
 # Poser — System Architecture
 
+> **Current pipeline (2026-09).** Sections below describe the original design, where each processor ran its own detector. The code now works like this:
+>
+> 1. `PersonDetector` (YOLOX, 320×256, full frame) returns body, head and hand boxes with scores ≥ 0.3.
+> 2. `poser.py` drops body boxes that lie ≥ 50% inside a higher-scoring body box (`_drop_nested_bodies`).
+> 3. For each body box: the most confident head whose centre is inside the box (`_find_head_for_body`, none if no head is inside) and the hands near it (`_find_hands_for_body`).
+> 4. `FaceProcessor` crops the head box without padding and runs the face landmark model; the face is skipped when the model's face score, sigmoid(`Identity_1`), is below 0.5. `HandProcessor` (padding 0.8) skips a hand with presence below 0.5. `BodyProcessor` (padding 0.1, letterboxed) skips a body with pose score below 0.5.
+> 5. `person_id` is currently the body's index in the detector's output for that frame, so colors can swap between frames. Stable IDs are issue #6.
+>
+> Measurements behind steps 2–4: `docs/orin-false-positives-issue-3.md`. Orin performance: `docs/orin-fps-issue-2.md`.
+
 ## a. System Architecture
 
 ### Overview
@@ -172,7 +182,7 @@ y_display = y_image
 
 ### ROI Expansion
 
-When cropping a detected bounding box for landmark inference, expand by **25%** on each side to ensure the full structure is captured. Clamp to frame boundaries.
+When cropping a detected bounding box for landmark inference, expand it on each side and clamp to frame boundaries. The padding differs per model: face 0 (the head box already includes hair; 25% padding pushed real faces' scores near the rejection threshold, see issue #3), body 0.1 (letterboxed), hand 0.8. The formula below shows 25%.
 
 ```
 pad_x      = bbox.width  × 0.25
