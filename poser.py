@@ -1,4 +1,5 @@
 import sys
+import json
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -16,16 +17,13 @@ from src.types import BoundingBox, FaceResult, HandResult, BodyResult
 
 
 def _find_head_for_body(body: BoundingBox, head_boxes: List[BoundingBox]) -> Optional[BoundingBox]:
-    """Return the head box whose centroid falls inside the body bbox, or the nearest one."""
-    if not head_boxes:
-        return None
+    """Return the most confident head box whose centroid falls inside the body bbox, or None."""
     inside = [
         h for h in head_boxes
         if body.x <= h.x + h.w / 2 <= body.x + body.w
         and body.y <= h.y + h.h / 2 <= body.y + body.h
     ]
-    pool = inside if inside else head_boxes
-    return max(pool, key=lambda h: h.confidence)
+    return max(inside, key=lambda h: h.confidence) if inside else None
 
 
 def _find_hands_for_body(body: BoundingBox, hand_boxes: List[BoundingBox]) -> List[BoundingBox]:
@@ -37,6 +35,29 @@ def _find_hands_for_body(body: BoundingBox, hand_boxes: List[BoundingBox]) -> Li
         if (body.x - margin_x <= h.x + h.w / 2 <= body.x + body.w + margin_x
             and body.y - margin_y <= h.y + h.h / 2 <= body.y + body.h + margin_y)
     ]
+
+
+def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies, cs_x: float, cs_y: float) -> None:
+    """Debug: save the frame with detector boxes + scores drawn, and all scores as JSON."""
+    def rec(b):
+        return {'score': round(b.confidence, 3), 'bbox': [round(v) for v in (b.x, b.y, b.w, b.h)]}
+
+    boxes = {'body': detections.body_boxes, 'head': detections.head_boxes, 'hand': detections.hand_boxes} if detections else {}
+    data = {cls: [rec(b) for b in bs] for cls, bs in boxes.items()}
+    data['face_results'] = [{'person_id': f.person_id, 'presence': round(f.presence, 3), 'bbox': rec(f.bbox)['bbox']} for f in faces]
+    data['hand_results'] = [{'person_id': h.person_id, 'presence': round(h.presence, 3), 'bbox': rec(h.bbox)['bbox']} for h in hands]
+    data['body_results'] = [{'person_id': b.person_id, 'presence': round(b.presence, 3)} for b in bodies]
+    (dump_dir / f'frame_{n:04d}.json').write_text(json.dumps(data, indent=1))
+
+    out = frame.copy()
+    colors = {'body': (0, 0, 255), 'head': (0, 255, 0), 'hand': (255, 128, 0)}
+    for cls, bs in boxes.items():
+        for b in bs:
+            p1 = (int(b.x * cs_x), int(b.y * cs_y))
+            p2 = (int((b.x + b.w) * cs_x), int((b.y + b.h) * cs_y))
+            cv2.rectangle(out, p1, p2, colors[cls], 2)
+            cv2.putText(out, f'{cls} {b.confidence:.2f}', (p1[0], max(12, p1[1] - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colors[cls], 2)
+    cv2.imwrite(str(dump_dir / f'frame_{n:04d}.jpg'), out)
 
 
 def main():
@@ -86,6 +107,11 @@ def main():
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'render')}
     counts = {k: 0 for k in ('bodies', 'heads', 'hands', 'faces_run', 'hands_run')}
 
+    dump_dir = Path(config.dump_detections) if config.dump_detections else None
+    if dump_dir:
+        dump_dir.mkdir(parents=True, exist_ok=True)
+    dump_n, last_dump = 0, 0.0
+
     try:
         while True:
             t = time.perf_counter()
@@ -96,6 +122,7 @@ def main():
             all_face_results: List[FaceResult] = []
             all_hand_results: List[HandResult] = []
             all_body_results: List[BodyResult] = []
+            detections = None
 
             if person_proc:
                 t = time.perf_counter()
@@ -149,9 +176,18 @@ def main():
             else:
                 cs_x = cs_y = 1.0
 
+            dump_now = dump_dir and time.monotonic() - last_dump >= config.dump_every
+            if dump_now:
+                cv2.imwrite(str(dump_dir / f'frame_{dump_n + 1:04d}_raw.jpg'), cpu_frame)
+
             renderer.draw_faces(cpu_frame, all_face_results, display_w, display_h, cs_x, cs_y)
             renderer.draw_hands(cpu_frame, all_hand_results, display_w, display_h, cs_x, cs_y)
             renderer.draw_body(cpu_frame, all_body_results, display_w, display_h, cs_x, cs_y)
+
+            if dump_now:
+                dump_n += 1
+                last_dump = time.monotonic()
+                _dump_frame(dump_dir, dump_n, cpu_frame, detections, all_face_results, all_hand_results, all_body_results, cs_x, cs_y)
 
             fps_counter.tick()
             if config.show_fps:

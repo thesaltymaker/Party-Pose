@@ -57,5 +57,6 @@ class HandProcessor:
                 landmarks=landmarks,
                 handedness=handedness,
                 handedness_score=handedness_score,
+                presence=presence_score,
             ))
         return results

@@ -35,8 +35,9 @@ class FaceProcessor:
         )
 
         session = self.model_manager.get_session('face_landmarks')
-        landmarks_raw = session.run(['Identity'], {'input_12': roi_arr})[0]
+        landmarks_raw, presence_logit = session.run(['Identity', 'Identity_1'], {'input_12': roi_arr})
         landmarks_raw = landmarks_raw.reshape(-1, 478, 3)
+        presence = float(1.0 / (1.0 + np.exp(-presence_logit.flat[0])))
 
         landmarks = Preprocessor.to_image_space(
             landmarks_raw[0], self.LANDMARK_W, self.LANDMARK_H,
@@ -47,7 +48,7 @@ class FaceProcessor:
         if self.enable_blendshapes and landmarks_raw.size > 0:
             blendshapes = self._run_blendshapes(landmarks_raw[0])
 
-        return FaceResult(bbox=head_bbox, landmarks=landmarks, blendshapes=blendshapes)
+        return FaceResult(bbox=head_bbox, landmarks=landmarks, blendshapes=blendshapes, presence=presence)
 
     def _run_blendshapes(self, landmarks_raw: np.ndarray) -> Optional[np.ndarray]:
         if not CANONICAL_BLENDSHAPE_INDICES:
