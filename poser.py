@@ -81,7 +81,8 @@ def main():
     display_h = config.height if config.height > 0 else capture.height
     scale_display = (display_w != capture.width or display_h != capture.height)
 
-    # Per-stage timing (ms), accumulated and printed with [FPS] when --fps is set
+    # Accumulated ms per stage (capture, person, face, hands, body, render); printed as 60-frame averages with --fps.
+    # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'render')}
     counts = {k: 0 for k in ('bodies', 'heads', 'hands', 'faces_run', 'hands_run')}
 
@@ -133,6 +134,7 @@ def main():
                             body.person_id = person_id
                             all_body_results.append(body)
 
+            # Timing for the final stage: GPU download, drawing, imshow, and waitKey.
             t_render = time.perf_counter()
             # Single GPU→CPU download for all drawing
             cpu_frame = frame_gpu.download()
@@ -164,6 +166,7 @@ def main():
                 break
             stage_ms['render'] += (time.perf_counter() - t_render) * 1000
 
+            # Log 60-frame averages and execution provider info (TensorRT vs CUDA fallback), then reset accumulators.
             if config.show_fps and fps_counter._print_counter % 60 == 0:
                 n = 60
                 print('[STAGES ms/frame] ' + ' '.join(f'{k}={v / n:.1f}' for k, v in stage_ms.items())
