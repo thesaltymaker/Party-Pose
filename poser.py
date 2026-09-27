@@ -288,7 +288,8 @@ def main():
             # Scale to display size on the GPU before the single GPU→CPU download, so lines/points are drawn
             # at native resolution without a CPU resize.
             if scale_display:
-                cv2.cuda.resize(frame_gpu, (display_w, display_h), display_gpu)
+                # Use the returned GpuMat: on the Orin's OpenCV build the dst argument is not written in place.
+                display_gpu = cv2.cuda.resize(frame_gpu, (display_w, display_h), display_gpu)
                 cpu_frame = display_gpu.download()
                 cs_x = display_w / frame_w
                 cs_y = display_h / frame_h
