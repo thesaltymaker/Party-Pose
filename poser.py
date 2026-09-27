@@ -18,7 +18,7 @@ from src.renderer import Renderer
 from src.fps_counter import FPSCounter
 from src.tracker import PersonTracker
 from src.track_stats import TrackStats
-from src.types import BoundingBox, FaceResult, HandResult, BodyResult
+from src.types import BoundingBox, FaceResult, HandResult, BodyResult, Landmark
 
 
 def _head_fit(body: BoundingBox, head: BoundingBox) -> Optional[float]:
@@ -51,6 +51,25 @@ def _assign_heads(bodies: List[BoundingBox], heads: List[BoundingBox]) -> List[O
         if fits:
             out[bi] = free.pop(min(fits)[1])
     return out
+
+
+def _moved_face(face: FaceResult, old_head: BoundingBox, new_head: BoundingBox) -> FaceResult:
+    """The face found in old_head, moved and scaled to where the same head is now (--face-hold)."""
+    ocx, ocy = old_head.x + old_head.w / 2, old_head.y + old_head.h / 2
+    ncx, ncy = new_head.x + new_head.w / 2, new_head.y + new_head.h / 2
+    s = new_head.w / old_head.w if old_head.w > 0 else 1.0
+    landmarks = [Landmark(ncx + (lm.x - ocx) * s, ncy + (lm.y - ocy) * s, lm.z * s, lm.visibility, lm.presence)
+                 for lm in face.landmarks]
+    return FaceResult(bbox=new_head, landmarks=landmarks, blendshapes=face.blendshapes,
+                      person_id=face.person_id, presence=face.presence)
+
+
+def _held_face(held_faces, person_id: int, head: BoundingBox, frame_no: int) -> Optional[FaceResult]:
+    """--face-hold: this person's last good face, moved to their head now, if it was seen within FACE_HOLD_FRAMES."""
+    entry = held_faces.get(person_id)
+    if entry is None or frame_no - entry[2] > FACE_HOLD_FRAMES:
+        return None
+    return _moved_face(entry[0], entry[1], head)
 
 
 def _find_hands_for_body(body: BoundingBox, hand_boxes: List[BoundingBox]) -> List[BoundingBox]:
@@ -164,6 +183,10 @@ def _fit(src_w: int, src_h: int, max_w: int, max_h: int) -> tuple:
 FACE_VERIFY_PRESENCE = 0.95
 FACE_VERIFY_HITS = 2
 
+# --face-hold: frames a person's last good face is still drawn after the face model stops finding it. While
+# dancing (Orin, 13-16 ft, facing the camera) the model kept about 1 head in 3; turns, tilts and blur fail.
+FACE_HOLD_FRAMES = 10  # ~0.33 s at 30 FPS
+
 WINDOW_NAME = 'Poser'
 QUIT_KEYS = (ord('q'), 27)  # q or Escape
 
@@ -244,7 +267,10 @@ def main():
     # Accumulated ms per stage (capture, person, face, hands, body, render); printed as 60-frame averages with --fps.
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'render')}
-    counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'hands_run')}
+    counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'faces_held',
+                             'hands_run')}
+    held_faces = {}  # track id -> (last good FaceResult, its head box, frame number), for --face-hold
+    frame_no = 0
     face_logits: List[float] = []  # face model logits of drawn faces, for tuning FACE_VERIFY_PRESENCE
 
     dump_dir = Path(config.dump_detections) if config.dump_detections else None
@@ -262,6 +288,7 @@ def main():
 
     try:
         while True:
+            frame_no += 1
             t = time.perf_counter()
             frame_gpu = capture.read_frame()
             frame_w, frame_h = frame_gpu.size()
@@ -288,6 +315,7 @@ def main():
                 # flickering false positive gets no skeleton and can't take a real person's head or hands.
                 tracks = tracker.update_tracks(detections.body_boxes)
                 track_ids = [tr.id for tr in tracks]
+                held_faces = {k: v for k, v in held_faces.items() if frame_no - v[2] <= FACE_HOLD_FRAMES}
                 # --drop-still (issue #7): a track that hasn't moved for ~10 s is a prop (or someone very
                 # still); it gets no head, hands, or face and body models.
                 confirmed = [(tr, box) for tr, box in zip(tracks, detections.body_boxes) if tr.confirmed]
@@ -301,7 +329,7 @@ def main():
                     person_id = track.id
                     still = track.is_still()
                     person_hands = _claim_hands(body_bbox, free_hands)
-                    face_logit = body = None
+                    face = face_logit = body = None
 
                     if face_proc and head_bbox is not None:
                         t = time.perf_counter()
@@ -316,6 +344,13 @@ def main():
                             face_logits.append(face_logit)
                             if face.presence >= FACE_VERIFY_PRESENCE:
                                 track.face_hits += 1
+
+                    if config.face_hold and head_bbox is not None:
+                        if face is not None:
+                            held_faces[person_id] = (face, head_bbox, frame_no)
+                        elif (held := _held_face(held_faces, person_id, head_bbox, frame_no)) is not None:
+                            all_face_results.append(held)
+                            counts['faces_held'] += 1
 
                     # A body is only drawn once the face model has clearly seen a real face in its own head box
                     # in a few frames. The lamp and other static false positives never show one (issue #3).

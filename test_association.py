@@ -118,3 +118,27 @@ def test_two_near_identical_boxes_keep_one():
     a = _box(100, 100, 200, 400, conf=0.6)
     b = _box(102, 98, 200, 404, conf=0.6)
     assert len(_drop_nested_bodies([a, b], [])) == 1
+
+
+def test_held_face_follows_the_head():
+    # --face-hold: the last good face is redrawn where the head is now, scaled with it.
+    from poser import _moved_face
+    from src.types import FaceResult, Landmark
+    old_head = _box(100, 100, 80, 100)                      # centre (140, 150)
+    face = FaceResult(bbox=old_head, person_id=3,
+                      landmarks=[Landmark(140, 150, 0), Landmark(160, 170, 2)])
+    new_head = _box(300, 200, 160, 200)                     # centre (380, 300), twice as big
+    moved = _moved_face(face, old_head, new_head)
+    assert [(lm.x, lm.y, lm.z) for lm in moved.landmarks] == [(380, 300, 0), (420, 340, 4)]
+    assert moved.person_id == 3 and moved.bbox == new_head
+    assert face.landmarks[1].x == 160                       # the stored face is not changed
+
+
+def test_held_face_is_dropped_after_the_hold_time():
+    from poser import FACE_HOLD_FRAMES, _held_face
+    from src.types import FaceResult, Landmark
+    head = _box(100, 100, 80, 100)
+    held = {7: (FaceResult(bbox=head, landmarks=[Landmark(140, 150, 0)], person_id=7), head, 5)}
+    assert _held_face(held, 7, head, 5 + FACE_HOLD_FRAMES) is not None
+    assert _held_face(held, 7, head, 6 + FACE_HOLD_FRAMES) is None
+    assert _held_face(held, 8, head, 6) is None              # another person gets nothing
