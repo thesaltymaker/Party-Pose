@@ -89,3 +89,32 @@ def test_head_stays_with_the_older_track_when_both_fit():
     newer = _box(110, 100, 200, 400)
     head = _box(180, 110, 60, 60)
     assert _assign_heads([older, newer], [head]) == [head, None]
+
+
+def test_partial_duplicate_box_inside_a_person_is_dropped():
+    # Orin run, 3 people: a 0.56 box on the left part of a person, 90% inside their 0.51 box, was tracked
+    # as a second person (#1/#20) and took the person's head.
+    person = _box(678, 393, 357, 481, conf=0.51)
+    part = _box(663, 406, 147, 314, conf=0.56)
+    head = _box(690, 410, 70, 80)
+    assert _drop_nested_bodies([part, person], [head]) == [person]
+
+
+def test_nested_box_without_heads_keeps_the_bigger_box():
+    person = _box(678, 393, 357, 481, conf=0.51)
+    part = _box(663, 406, 147, 314, conf=0.56)
+    assert _drop_nested_bodies([part, person], []) == [person]
+
+
+def test_higher_scoring_person_inside_false_positive_box_keeps_the_person():
+    # The head sits in the middle of the big box, so only the person's box fits it.
+    person = _box(600, 300, 250, 700, conf=0.8)
+    around = _box(300, 0, 900, 1080, conf=0.4)
+    head = _box(690, 310, 70, 80)
+    assert _drop_nested_bodies([person, around], [head]) == [person]
+
+
+def test_two_near_identical_boxes_keep_one():
+    a = _box(100, 100, 200, 400, conf=0.6)
+    b = _box(102, 98, 200, 404, conf=0.6)
+    assert len(_drop_nested_bodies([a, b], [])) == 1

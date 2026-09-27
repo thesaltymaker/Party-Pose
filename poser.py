@@ -93,21 +93,37 @@ def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies,
     cv2.imwrite(str(dump_dir / f'frame_{n:04d}.jpg'), out)
 
 
-def _drop_nested_bodies(body_boxes: List[BoundingBox], max_inside: float = 0.5) -> List[BoundingBox]:
-    """Drop body boxes that lie mostly (>= max_inside of their area) inside a higher-scoring body box.
+def _drop_nested_bodies(body_boxes: List[BoundingBox], head_boxes: List[BoundingBox] = (),
+                        max_inside: float = 0.5, duplicate_inside: float = 0.8) -> List[BoundingBox]:
+    """Drop body boxes that lie mostly inside another body box.
 
-    The detector's NMS keeps these because their IoU with the bigger box is low; on the Orin they were
-    a lamp beside a person and duplicate boxes on a raised arm.
+    A box >= max_inside inside a higher-scoring box is dropped. The detector's NMS keeps these because their
+    IoU with the bigger box is low; on the Orin they were a lamp beside a person and duplicate boxes on a
+    raised arm.
+
+    A box >= duplicate_inside inside another box is a duplicate even when it scores higher (Orin: a 0.56 box
+    on the left part of a person, 90% inside their 0.51 box). Only one of the pair is kept: the outer box,
+    unless only the inner box fits a head (then the outer box is a false positive around a person).
     """
     def inside(a: BoundingBox, b: BoundingBox) -> float:
         ix = max(0.0, min(a.x + a.w, b.x + b.w) - max(a.x, b.x))
         iy = max(0.0, min(a.y + a.h, b.y + b.h) - max(a.y, b.y))
         return ix * iy / (a.w * a.h)
 
-    return [
-        a for a in body_boxes
-        if not any(b.confidence > a.confidence and inside(a, b) >= max_inside for b in body_boxes)
-    ]
+    def fits_head(body: BoundingBox) -> bool:
+        return any(_head_fit(body, h) is not None for h in head_boxes)
+
+    drop = set()
+    for i, a in enumerate(body_boxes):
+        for j, b in enumerate(body_boxes):
+            if i == j:
+                continue
+            share = inside(a, b)
+            if b.confidence > a.confidence and share >= max_inside:
+                drop.add(i)
+            elif share >= duplicate_inside and i not in drop and j not in drop:
+                drop.add(j if fits_head(a) and not fits_head(b) else i)
+    return [a for i, a in enumerate(body_boxes) if i not in drop]
 
 
 def _claim_hands(body: BoundingBox, hands: List[BoundingBox]) -> List[BoundingBox]:
@@ -261,7 +277,7 @@ def main():
             if person_proc:
                 t = time.perf_counter()
                 detections = person_proc.process(frame_gpu, frame_w, frame_h)
-                detections.body_boxes = _drop_nested_bodies(detections.body_boxes)
+                detections.body_boxes = _drop_nested_bodies(detections.body_boxes, detections.head_boxes)
                 stage_ms['person'] += (time.perf_counter() - t) * 1000
                 counts['bodies'] += len(detections.body_boxes)
                 counts['heads'] += len(detections.head_boxes)
@@ -279,6 +295,14 @@ def main():
                 counts['people'] += len(people)
                 for (track, body_bbox), head_bbox in zip(people, heads):
                     person_id = track.id
+                    track.note_head(head_bbox is not None)
+                    head_info = dict(head_rate=track.head_rate(), head_ok=track.head_ok)
+                    # --head-filter: skip tracks that rarely have a head (props), before the face and body
+                    # models run on them.
+                    if config.head_filter and not track.head_ok:
+                        if track_stats:
+                            track_stats.update(track.id, body_bbox, head_bbox is not None, None, None, **head_info)
+                        continue
                     person_hands = _claim_hands(body_bbox, free_hands)
                     face_logit = body = None
 
@@ -299,7 +323,8 @@ def main():
                     # in a few frames. The lamp and other static false positives never show one (issue #3).
                     if require_face and track.face_hits < FACE_VERIFY_HITS:
                         if track_stats:
-                            track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, None)
+                            track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, None,
+                                               **head_info)
                         continue
                     counts['drawn'] += 1
                     id_labels.append((person_id, body_bbox))
@@ -321,11 +346,12 @@ def main():
                             all_body_results.append(body)
 
                     if track_stats:
-                        track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, body)
+                        track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, body,
+                                           **head_info)
 
                 if track_stats and time.monotonic() - last_report >= config.track_report:
                     last_report = time.monotonic()
-                    for line in track_stats.report({t.id for t in tracker.tracks}):
+                    for line in track_stats.report({t.id for t in tracker.tracks + tracker.lost}):
                         print(line, flush=True)
 
             # Timing for the final stage: GPU download, drawing, imshow, and waitKey.

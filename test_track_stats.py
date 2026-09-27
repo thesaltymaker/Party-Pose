@@ -30,3 +30,13 @@ def test_report_skips_short_and_forgets_expired_tracks():
     for _ in range(20):
         ts.update(3, BoundingBox(0, 0, 50, 100, 0.3), False, None, None)
     assert ts.report({3})[0].startswith('[TRACK] #3 frames=20 ')
+
+
+def test_report_shows_head_filter_decision():
+    ts = TrackStats()
+    for _ in range(20):
+        ts.update(4, BoundingBox(0, 0, 50, 100, 0.3), True, None, None, head_rate=0.8, head_ok=True)
+        ts.update(5, BoundingBox(200, 0, 50, 100, 0.3), False, None, None, head_rate=0.1, head_ok=False)
+    shown, hidden = ts.report({4, 5})
+    assert 'head2s=80% show=yes' in shown
+    assert 'head2s=10% show=no' in hidden

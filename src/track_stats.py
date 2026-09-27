@@ -31,6 +31,8 @@ class _Stats:
     body_presence: List[float] = field(default_factory=list)
     face_logits: List[float] = field(default_factory=list)
     heads: int = 0
+    head_rate: Optional[float] = None  # head filter: recent head rate and decision (from the tracker)
+    head_ok: Optional[bool] = None
     last_limbs: Optional[List[Tuple[float, float]]] = None
     last_centre: Optional[Tuple[float, float]] = None
     seen_since_report: bool = False
@@ -42,8 +44,10 @@ class TrackStats:
         self._max = max_samples
 
     def update(self, track_id: int, box: BoundingBox, had_head: bool,
-               face_logit: Optional[float], body: Optional[BodyResult]) -> None:
+               face_logit: Optional[float], body: Optional[BodyResult],
+               head_rate: Optional[float] = None, head_ok: Optional[bool] = None) -> None:
         st = self._stats.setdefault(track_id, _Stats())
+        st.head_rate, st.head_ok = head_rate, head_ok
         st.frames += 1
         st.seen_since_report = True
         h = max(box.h, 1.0)
@@ -83,7 +87,9 @@ class TrackStats:
                 f'[TRACK] #{tid} frames={st.frames} box=({x:.0f},{y:.0f} {w:.0f}x{h:.0f}) '
                 f'score={statistics.median(st.scores):.2f} '
                 f'box_move={_med(st.box_moves):.4f} limb_move={_med(st.limb_moves):.4f} '
-                f'pose={_med(st.body_presence):.2f} head={st.heads / st.frames:.0%} {face}')
+                f'pose={_med(st.body_presence):.2f} head={st.heads / st.frames:.0%} {face}'
+                + (f' head2s={st.head_rate:.0%} show={"yes" if st.head_ok else "no"}'
+                   if st.head_rate is not None else ''))
             st.seen_since_report = False
         for tid in [t for t in self._stats if t not in alive_ids]:
             del self._stats[tid]

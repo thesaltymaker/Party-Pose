@@ -12,6 +12,18 @@ frames, so a one-frame detector miss doesn't reset it. A track is `confirmed` on
 `min_hits` frames; the app only draws confirmed tracks, so a false positive that flickers for a frame or
 two never gets a skeleton (and never uses up a colour).
 
+A confirmed track that expires is kept as "lost" for `max_lost` frames. A new box in the same spot gets the
+lost track back, with its ID, colour and head history, instead of a new ID. A far person with a weak detector
+score otherwise got a new ID every few seconds. "Same spot" is measured as the share of the smaller box that
+lies inside the other (>= `revive_overlap`), not IoU: that person's box also flips between a small and a big
+box (IoU 0.25).
+
+Head filter (`--head-filter`): each track records whether a head box was assigned to it in each of its last
+`HEAD_WINDOW` frames. On the Orin, people had a head in 42-100% of frames (also when facing away) and false
+positives in 8-33%. A track is shown once the rate reaches HEAD_SHOW and hidden again only below HEAD_HIDE,
+so it doesn't flicker near the threshold. The 5 s window keeps a false positive at ~30% from reaching
+HEAD_SHOW by chance.
+
 Each track keeps a short history of box centres for venue calibration (issue #7).
 """
 from __future__ import annotations
@@ -22,6 +34,11 @@ from typing import Deque, List, Optional, Tuple
 
 from src.types import BoundingBox
 
+HEAD_WINDOW = 150      # frames of head history per track (5 s at 30 FPS)
+HEAD_MIN_FRAMES = 30   # no decision before this many frames
+HEAD_SHOW = 0.45       # head rate at which a hidden track is shown
+HEAD_HIDE = 0.35       # head rate below which a shown track is hidden
+
 
 def iou(a: BoundingBox, b: BoundingBox) -> float:
     ix = max(0.0, min(a.x + a.w, b.x + b.w) - max(a.x, b.x))
@@ -29,6 +46,14 @@ def iou(a: BoundingBox, b: BoundingBox) -> float:
     inter = ix * iy
     union = a.w * a.h + b.w * b.h - inter
     return inter / union if union > 0 else 0.0
+
+
+def overlap_of_smaller(a: BoundingBox, b: BoundingBox) -> float:
+    """Intersection area as a share of the smaller box's area (1.0 when one box lies inside the other)."""
+    ix = max(0.0, min(a.x + a.w, b.x + b.w) - max(a.x, b.x))
+    iy = max(0.0, min(a.y + a.h, b.y + b.h) - max(a.y, b.y))
+    smaller = min(a.w * a.h, b.w * b.h)
+    return ix * iy / smaller if smaller > 0 else 0.0
 
 
 def _centre(b: BoundingBox) -> Tuple[float, float]:
@@ -47,6 +72,23 @@ class Track:
     confirmed: bool = False  # matched in at least min_hits frames; stays True until the track expires
     face_hits: int = 0       # frames in which the app's face model clearly found a face in this track's head box
     history: Deque[Tuple[float, float]] = field(default_factory=lambda: deque(maxlen=300))
+    head_seen: Deque[bool] = field(default_factory=lambda: deque(maxlen=HEAD_WINDOW))
+    head_ok: bool = False    # head filter decision, see note_head()
+
+    def head_rate(self) -> float:
+        """Share of the last HEAD_WINDOW frames in which this track got a head box."""
+        return sum(self.head_seen) / len(self.head_seen) if self.head_seen else 0.0
+
+    def note_head(self, had_head: bool) -> None:
+        """Record whether this track got a head box this frame, and update head_ok."""
+        self.head_seen.append(had_head)
+        if len(self.head_seen) < HEAD_MIN_FRAMES:
+            return
+        rate = self.head_rate()
+        if rate >= HEAD_SHOW:
+            self.head_ok = True
+        elif rate < HEAD_HIDE:
+            self.head_ok = False
 
     def predicted(self) -> BoundingBox:
         """The last box moved by the velocity over the frames since it was seen."""
@@ -59,10 +101,14 @@ class PersonTracker:
     """Assigns stable IDs to body boxes. Call `update()` once per frame, even with no boxes."""
 
     def __init__(self, max_missed: int = 15, min_iou: float = 0.2, max_centre_dist: float = 0.6,
-                 velocity_smoothing: float = 0.5, min_hits: int = 3) -> None:
+                 velocity_smoothing: float = 0.5, min_hits: int = 3, max_lost: int = 150,
+                 revive_overlap: float = 0.5) -> None:
         """
         min_hits: frames a track must be matched in before it is confirmed (drawn).
         max_missed: frames a track survives without a match (15 = 0.5 s at 30 FPS).
+        max_lost: frames since last seen that an expired confirmed track can still be revived (150 = 5 s).
+        revive_overlap: minimum share of the smaller of (new box, lost track's last box) inside the other,
+            to revive the lost track.
         min_iou: minimum overlap between a box and a track's predicted box to match.
         max_centre_dist: fallback match when boxes don't overlap enough: centre distance, as a fraction
             of the track box's diagonal.
@@ -73,21 +119,29 @@ class PersonTracker:
         self.max_centre_dist = max_centre_dist
         self.velocity_smoothing = velocity_smoothing
         self.min_hits = min_hits
+        self.max_lost = max_lost
+        self.revive_overlap = revive_overlap
         self.tracks: List[Track] = []
+        self.lost: List[Track] = []  # expired confirmed tracks that a box in the same spot can revive
         self._next_id = 0
 
     def _match_score(self, track: Track, box: BoundingBox) -> Optional[float]:
         """Higher is better; None if the box can't belong to the track.
 
         IoU matches score in (1, 2]; centre-distance matches in (0, 1], so any overlap match wins over
-        a distance-only one.
+        a distance-only one. If the box doesn't match the predicted box, it is compared with the last box:
+        a still person whose box flips between a small and a big box makes the centre jump, which the
+        velocity takes as movement, so the prediction alone missed them (Orin, issue #6).
         """
-        pred = track.predicted()
-        overlap = iou(pred, box)
+        score = self._score_against(track.predicted(), box)
+        return score if score is not None else self._score_against(track.box, box)
+
+    def _score_against(self, ref: BoundingBox, box: BoundingBox) -> Optional[float]:
+        overlap = iou(ref, box)
         if overlap >= self.min_iou:
             return 1.0 + overlap
-        (px, py), (bx, by) = _centre(pred), _centre(box)
-        diag = (pred.w ** 2 + pred.h ** 2) ** 0.5
+        (px, py), (bx, by) = _centre(ref), _centre(box)
+        diag = (ref.w ** 2 + ref.h ** 2) ** 0.5
         dist = ((px - bx) ** 2 + (py - by) ** 2) ** 0.5 / diag if diag > 0 else float('inf')
         if dist <= self.max_centre_dist:
             return 1.0 - dist / self.max_centre_dist * 0.999
@@ -122,7 +176,29 @@ class PersonTracker:
                 track.missed += 1
                 track.age += 1
 
+        for track in self.lost:
+            track.missed += 1
+            track.age += 1
+        self.lost = [t for t in self.lost if t.missed <= self.max_lost]
+        self.lost += [t for t in self.tracks if t.missed > self.max_missed and t.confirmed]
         self.tracks = [t for t in self.tracks if t.missed <= self.max_missed]
+
+        revive = sorted(((overlap_of_smaller(t.box, box), li, bi) for li, t in enumerate(self.lost)
+                         for bi, box in enumerate(boxes) if out[bi] is None), reverse=True)
+        revived = set()
+        for overlap, li, bi in revive:
+            if overlap < self.revive_overlap:
+                break
+            if li in revived or out[bi] is not None:
+                continue
+            revived.add(li)
+            track = self.lost[li]
+            track.vx = track.vy = 0.0
+            self._advance(track, boxes[bi])
+            track.vx = track.vy = 0.0
+            self.tracks.append(track)
+            out[bi] = track
+        self.lost = [t for li, t in enumerate(self.lost) if li not in revived]
 
         for bi, box in enumerate(boxes):
             if out[bi] is None:
