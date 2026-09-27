@@ -66,3 +66,7 @@ Thumbs.db
 # Logs
 *.log
 env.*/
+
+# Debug screenshots and detection dumps (may show private rooms); only issue4/ and top-level demo shots are tracked
+screenshots/*/
+!screenshots/issue4/
