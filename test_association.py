@@ -55,3 +55,16 @@ def test_fit_keeps_aspect_ratio():
     from poser import _fit
     assert _fit(1920, 1080, 2560, 1440) == (2560, 1440)
     assert _fit(1920, 1080, 2560, 1600) == (2560, 1440)
+
+
+def test_screen_size_prefers_connected_output(monkeypatch):
+    import subprocess
+    from poser import _screen_size
+    out = ('Screen 0: minimum 8 x 8, current 4480 x 1440, maximum 32767 x 32767\n'
+           'HDMI-0 connected primary 2560x1440+0+0 (normal left inverted right x axis y axis) 597mm x 336mm\n'
+           '   2560x1440     59.95*+\n')
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 0, out, ''))
+    assert _screen_size() == (2560, 1440)
+    out2 = 'Screen 0: minimum 8 x 8, current 2560 x 1440, maximum 32767 x 32767\n'
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 0, out2, ''))
+    assert _screen_size() == (2560, 1440)
