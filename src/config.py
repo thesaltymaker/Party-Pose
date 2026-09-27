@@ -22,6 +22,8 @@ class Config:
     show_ids: bool = False      # draw '#<track id>' on each person
     track_report: float = 0.0   # seconds between [TRACK] stat lines (0 = off)
     require_face: bool = False  # draw a person only once a real face has been seen in their track
+    skelly: bool = False        # filled bone-coloured face with eyes, nose and mouth cut out
+    santa_hat: bool = False     # Santa hat on each face
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -60,6 +62,8 @@ def parse_args() -> Config:
     parser.add_argument("--require-face", action="store_true",
                         help="Draw a tracked body only after a real face was seen in it (fewer false positives; "
                              "people facing away are not drawn)")
+    parser.add_argument("--skelly", action="store_true", help="Filled skeleton face (eyes, nose and mouth cut out)")
+    parser.add_argument("--santa-hat", action="store_true", help="Draw a Santa hat on each face")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
@@ -96,4 +100,6 @@ def parse_args() -> Config:
         show_ids=args.show_ids,
         track_report=args.track_report,
         require_face=args.require_face,
+        skelly=args.skelly,
+        santa_hat=args.santa_hat,
     )

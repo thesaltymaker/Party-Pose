@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 import cv2
+import numpy as np
 from src.config import parse_args
 from src.model_manager import ModelManager
 from src.video_capture import VideoCaptureModule
@@ -203,7 +204,7 @@ def main():
     track_stats = TrackStats() if config.track_report > 0 else None
     last_report = time.monotonic()
     require_face = config.require_face and face_proc is not None
-    renderer    = Renderer(show_roi=config.show_roi)
+    renderer    = Renderer(show_roi=config.show_roi, skelly=config.skelly, santa_hat=config.santa_hat)
     fps_counter = FPSCounter()
 
     display_w = config.width  if config.width  > 0 else capture.width
@@ -221,6 +222,8 @@ def main():
             print('[DISPLAY] could not read the screen size (xrandr); pass --width/--height', flush=True)
     scale_display = (display_w != capture.width or display_h != capture.height)
     display_gpu = cv2.cuda_GpuMat()
+    # --black-bg shows none of the camera image, so draw on this instead of resizing and downloading the frame.
+    black_frame = np.zeros((display_h, display_w, 3), np.uint8) if config.black_bg else None
 
     # Accumulated ms per stage (capture, person, face, hands, body, render); printed as 60-frame averages with --fps.
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
@@ -329,7 +332,12 @@ def main():
             t_render = time.perf_counter()
             # Scale to display size on the GPU before the single GPU→CPU download, so lines/points are drawn
             # at native resolution without a CPU resize.
-            if scale_display:
+            if black_frame is not None:
+                black_frame.fill(0)
+                cpu_frame = black_frame
+                cs_x = display_w / frame_w
+                cs_y = display_h / frame_h
+            elif scale_display:
                 # Use the returned GpuMat: on the Orin's OpenCV build the dst argument is not written in place.
                 display_gpu = cv2.cuda.resize(frame_gpu, (display_w, display_h), display_gpu)
                 cpu_frame = display_gpu.download()
@@ -338,8 +346,6 @@ def main():
             else:
                 cpu_frame = frame_gpu.download()
                 cs_x = cs_y = 1.0
-            if config.black_bg:
-                cpu_frame[:] = 0
 
             dump_now = dump_dir and time.monotonic() - last_dump >= config.dump_every
             if dump_now:
