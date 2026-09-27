@@ -21,7 +21,7 @@
 With two people the Orin logged ~4.8 body boxes and ~2 heads per frame, and colours still changed every frame. Two causes, both fixed:
 
 - **Unconfirmed tracks were drawn.** A flickering false positive got a skeleton and a fresh ID (colour) each time it reappeared. Tracks are now `confirmed` after `min_hits=3` matched frames; only confirmed tracks run the face/hand/pose models and are drawn. Fewer pose runs per frame, too.
-- **A head (or hand) was drawn once per body box containing it**, so a false-positive box around a real person drew a second face mesh in another colour, with the top one changing by score. Bodies now claim heads and hands exclusively, oldest track first (`_claim_parts`).
+- **A head (or hand) was drawn once per body box containing it**, so a false-positive box around a real person drew a second face mesh in another colour, with the top one changing by score. Bodies now get heads and hands exclusively (see below for how heads are matched).
 
 `[STAGES]` now logs `people=` (confirmed tracks per frame) next to `bodies=` (raw boxes).
 
@@ -29,7 +29,16 @@ With two people the Orin logged ~4.8 body boxes and ~2 heads per frame, and colo
 
 Second Orin run: colours stable, but many body false positives, not helped by more light. Per-frame detector and pose scores can't separate the lamp from a seated person (issue #3). The face model's face score can: real faces score high, the ball, lampshade, backs of heads and clutter low; that check already stops face meshes on the ball.
 
-With tracks, it now gates bodies too: a confirmed track is drawn (and runs the hand and pose models) only after the face model has accepted a face in its head box at least once (`Track.face_seen`). After that the person stays drawn while tracked, even when they turn away. Cost: someone who enters facing away is drawn from the first frame they face the camera. `--no-require-face` turns it off; with `--no-face` it is off. `[STAGES]` logs `drawn=` beside `people=`.
+With tracks, it now gates bodies too: a confirmed track is drawn (and runs the hand and pose models) only after the face model has accepted a face in its head box at least once (`Track.face_hits`). After that the person stays drawn while tracked, even when they turn away. Cost: someone who enters facing away is drawn from the first frame they face the camera. `--no-require-face` turns it off; with `--no-face` it is off. `[STAGES]` logs `drawn=` beside `people=`.
+
+### Third Orin run: three people, two facing away
+
+`bodies=9.7 people=9.7 drawn=7-8` and rising, `heads=6-8`, FPS 13. False positives were passing the face check:
+
+- **Head went to the wrong body.** With ~10 body boxes, a person's head sat inside several false-positive boxes, and the oldest (a static false positive) claimed it; the person's real face then verified that box. Heads are now matched by fit (`_assign_heads`): the head centre must be inside the body box horizontally and in its top 45%, the head at least 0.15 of the body's width, and the best fit (closest to the box's top-centre) wins, one head per body.
+- **One weak accept was enough**, and over thousands of frames a borderline non-face eventually passes. A track now needs `FACE_VERIFY_HITS=2` frames with presence ≥ `FACE_VERIFY_PRESENCE=0.993` (logit +5; real frontal faces measured +8 to +27, non-faces −1 to −23). Faces are still drawn from 0.5.
+
+People facing away are, by design, not drawn until they face the camera once. Showing them without a face needs another signal, e.g. movement (#7).
 
 ## Tests
 

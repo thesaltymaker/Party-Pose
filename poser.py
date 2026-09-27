@@ -18,14 +18,34 @@ from src.tracker import PersonTracker
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult
 
 
-def _find_head_for_body(body: BoundingBox, head_boxes: List[BoundingBox]) -> Optional[BoundingBox]:
-    """Return the most confident head box whose centroid falls inside the body bbox, or None."""
-    inside = [
-        h for h in head_boxes
-        if body.x <= h.x + h.w / 2 <= body.x + body.w
-        and body.y <= h.y + h.h / 2 <= body.y + body.h
-    ]
-    return max(inside, key=lambda h: h.confidence) if inside else None
+def _head_fit(body: BoundingBox, head: BoundingBox) -> Optional[float]:
+    """How well a head box fits a body box as that body's head (lower is better), or None if it can't be.
+
+    The head's centre must be inside the body box horizontally and in its top part (a false-positive box
+    around a person has the person's head in its middle), and the head must not be tiny next to the body
+    (a box around a whole group).
+    """
+    hx, hy = head.x + head.w / 2, head.y + head.h / 2
+    if not (body.x <= hx <= body.x + body.w):
+        return None
+    if not (body.y <= hy <= body.y + 0.45 * body.h):
+        return None
+    if head.w < 0.15 * body.w:
+        return None
+    return abs(hx - (body.x + body.w / 2)) / body.w + abs(hy - (body.y + 0.1 * body.h)) / body.h
+
+
+def _assign_heads(bodies: List[BoundingBox], heads: List[BoundingBox]) -> List[Optional[BoundingBox]]:
+    """Give each body at most one head and each head to at most one body: best fits first (issue #6)."""
+    pairs = sorted((fit, bi, hi) for bi, body in enumerate(bodies) for hi, head in enumerate(heads)
+                   if (fit := _head_fit(body, head)) is not None)
+    out: List[Optional[BoundingBox]] = [None] * len(bodies)
+    used = set()
+    for _, bi, hi in pairs:
+        if out[bi] is None and hi not in used:
+            out[bi] = heads[hi]
+            used.add(hi)
+    return out
 
 
 def _find_hands_for_body(body: BoundingBox, hand_boxes: List[BoundingBox]) -> List[BoundingBox]:
@@ -85,19 +105,12 @@ def _drop_nested_bodies(body_boxes: List[BoundingBox], max_inside: float = 0.5) 
     ]
 
 
-def _claim_parts(body: BoundingBox, heads: List[BoundingBox], hands: List[BoundingBox]):
-    """Find this body's head and hands, and remove them from the pools so no other body gets them.
-
-    Without this, a head inside two body boxes (a person plus a false positive around them) got a face mesh
-    per box, in two colours (issue #6).
-    """
-    head = _find_head_for_body(body, heads)
-    if head is not None:
-        heads.remove(head)
-    own_hands = _find_hands_for_body(body, hands)
-    for h in own_hands:
+def _claim_hands(body: BoundingBox, hands: List[BoundingBox]) -> List[BoundingBox]:
+    """This body's hands, removed from the pool so no other body gets them."""
+    own = _find_hands_for_body(body, hands)
+    for h in own:
         hands.remove(h)
-    return head, own_hands
+    return own
 
 
 def _screen_size() -> Optional[tuple]:
@@ -123,6 +136,11 @@ def _fit(src_w: int, src_h: int, max_w: int, max_h: int) -> tuple:
     scale = min(max_w / src_w, max_h / src_h)
     return round(src_w * scale), round(src_h * scale)
 
+
+# A track counts as a person after FACE_VERIFY_HITS frames with a face scored at least FACE_VERIFY_PRESENCE.
+# 0.993 is a logit of +5: real frontal faces on the Orin scored +8 to +27, non-faces -1 to -23 (issue #3).
+FACE_VERIFY_PRESENCE = 0.993
+FACE_VERIFY_HITS = 2
 
 WINDOW_NAME = 'Poser'
 QUIT_KEYS = (ord('q'), 27)  # q or Escape
@@ -244,11 +262,12 @@ def main():
                 track_ids = [tr.id for tr in tracks]
                 people = sorted(((tr, box) for tr, box in zip(tracks, detections.body_boxes) if tr.confirmed),
                                 key=lambda p: (-p[0].age, p[0].id))
-                free_heads, free_hands = list(detections.head_boxes), list(detections.hand_boxes)
+                free_hands = list(detections.hand_boxes)
+                heads = _assign_heads([box for _, box in people], detections.head_boxes)
                 counts['people'] += len(people)
-                for track, body_bbox in people:
+                for (track, body_bbox), head_bbox in zip(people, heads):
                     person_id = track.id
-                    head_bbox, person_hands = _claim_parts(body_bbox, free_heads, free_hands)
+                    person_hands = _claim_hands(body_bbox, free_hands)
 
                     if face_proc and head_bbox is not None:
                         t = time.perf_counter()
@@ -258,11 +277,12 @@ def main():
                         if face is not None:
                             face.person_id = person_id
                             all_face_results.append(face)
-                            track.face_seen = True
+                            if face.presence >= FACE_VERIFY_PRESENCE:
+                                track.face_hits += 1
 
-                    # A body is only drawn once the face model has seen a real face in its track. The lamp and
-                    # other static false positives never show one (their "heads" score as non-faces, issue #3).
-                    if require_face and not track.face_seen:
+                    # A body is only drawn once the face model has clearly seen a real face in its own head box
+                    # in a few frames. The lamp and other static false positives never show one (issue #3).
+                    if require_face and track.face_hits < FACE_VERIFY_HITS:
                         continue
                     counts['drawn'] += 1
 

@@ -45,7 +45,7 @@ class Track:
     age: int = 1             # frames since the track started
     hits: int = 1            # frames in which the track was matched
     confirmed: bool = False  # matched in at least min_hits frames; stays True until the track expires
-    face_seen: bool = False  # set by the app once the face model found a real face in this track's head box
+    face_hits: int = 0       # frames in which the app's face model clearly found a face in this track's head box
     history: Deque[Tuple[float, float]] = field(default_factory=lambda: deque(maxlen=300))
 
     def predicted(self) -> BoundingBox:

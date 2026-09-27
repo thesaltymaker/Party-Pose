@@ -1,4 +1,4 @@
-from poser import _find_head_for_body, _drop_nested_bodies
+from poser import _assign_heads, _claim_hands, _drop_nested_bodies
 from src.types import BoundingBox
 
 
@@ -9,21 +9,37 @@ def _box(x, y, w, h, conf=0.9):
 def test_head_inside_body_is_chosen():
     body = _box(100, 100, 200, 400)
     head = _box(150, 110, 60, 60)
-    assert _find_head_for_body(body, [head]) is head
+    assert _assign_heads([body], [head]) == [head]
 
 
 def test_head_outside_body_is_not_attached():
     # Issue #3: a black ball far from the body was picked as its head and got a face mesh.
     body = _box(1710, 755, 210, 324)
     ball = _box(1690, 658, 156, 148, conf=0.63)  # centroid (1768, 732) is above the body box
-    assert _find_head_for_body(body, [ball]) is None
+    assert _assign_heads([body], [ball]) == [None]
 
 
-def test_highest_confidence_head_inside_wins():
-    body = _box(0, 0, 500, 500)
-    low = _box(10, 10, 50, 50, conf=0.4)
-    high = _box(100, 10, 50, 50, conf=0.8)
-    assert _find_head_for_body(body, [low, high]) is high
+def test_head_near_top_centre_wins():
+    body = _box(0, 0, 500, 1000)
+    off = _box(10, 150, 80, 80)
+    centred = _box(210, 40, 80, 80)
+    assert _assign_heads([body], [off, centred]) == [centred]
+
+
+def test_false_positive_box_around_a_person_does_not_take_their_head():
+    # Issue #6 (Orin, 3 people, ~10 body boxes): a big false-positive box containing a person's head got
+    # the head, passed the face check, and was drawn as a person.
+    person = _box(600, 300, 250, 700)
+    around = _box(300, 0, 900, 1080, conf=0.4)  # head sits in the middle of this box
+    head = _box(690, 310, 70, 80)
+    assert _assign_heads([around, person], [head]) == [None, head]
+
+
+def test_each_head_goes_to_one_body():
+    a = _box(100, 100, 200, 400)
+    b = _box(110, 90, 200, 420)   # duplicate box on the same person
+    head = _box(170, 110, 60, 60)
+    assert sorted(h is head for h in _assign_heads([a, b], [head])) == [False, True]
 
 
 def test_body_mostly_inside_higher_scoring_body_is_dropped():
@@ -39,16 +55,12 @@ def test_separate_bodies_are_kept():
     assert _drop_nested_bodies([a, b]) == [a, b]
 
 
-def test_head_and_hands_go_to_only_one_body():
-    # Issue #6: a head inside both a person's box and a false-positive box around them got two face meshes.
-    from poser import _claim_parts
+def test_hands_go_to_only_one_body():
     person = _box(100, 100, 200, 400)
     around = _box(50, 50, 400, 500, conf=0.4)
-    heads = [_box(150, 110, 60, 60)]
     hands = [_box(90, 250, 40, 40)]
-    head, own_hands = _claim_parts(person, heads, hands)
-    assert head is not None and len(own_hands) == 1
-    assert _claim_parts(around, heads, hands) == (None, [])
+    assert len(_claim_hands(person, hands)) == 1
+    assert _claim_hands(around, hands) == []
 
 
 def test_fit_keeps_aspect_ratio():
