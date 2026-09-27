@@ -1,4 +1,6 @@
-from src.tracker import HEAD_WINDOW, PersonTracker
+import math
+
+from src.tracker import STILL_FRAMES, PersonTracker
 from src.types import BoundingBox
 
 
@@ -167,39 +169,6 @@ def test_lost_track_revives_for_only_one_box():
     assert ids.count(tr.id) == 1
 
 
-def test_head_filter_shows_person_and_hides_headless_box():
-    # Orin runs: people had a head in 48-100% of frames, false positives in 8-33%.
-    t = PersonTracker()
-    person, prop = t.update_tracks([_box(400), _box(1400)])
-    for f in range(HEAD_WINDOW):
-        person.note_head(f % 2 == 0)   # 50%
-        prop.note_head(f % 3 == 0)     # 33%
-    assert person.head_ok and not prop.head_ok
-
-
-def test_head_filter_waits_for_enough_frames():
-    t = PersonTracker()
-    [tr] = t.update_tracks([_box(400)])
-    for _ in range(5):
-        tr.note_head(True)
-    assert not tr.head_ok
-
-
-def test_head_filter_does_not_flicker_near_the_threshold():
-    # Once shown, a track is hidden only when its head rate falls clearly below the show threshold.
-    t = PersonTracker()
-    [tr] = t.update_tracks([_box(400)])
-    for _ in range(HEAD_WINDOW):
-        tr.note_head(True)
-    assert tr.head_ok
-    for f in range(HEAD_WINDOW):
-        tr.note_head(f % 10 < 4)       # 40%: below show (45%), above hide (35%)
-    assert tr.head_ok
-    for f in range(HEAD_WINDOW):
-        tr.note_head(f % 10 < 1)       # 10%
-    assert not tr.head_ok
-
-
 def test_box_flipping_between_small_and_big_keeps_the_id():
     # Orin run: a still, far person's box flips between 117x239 and ~220x510 every few frames. The centre
     # jumps ~125 px each flip, which the velocity estimate took as movement, so the prediction missed the
@@ -211,3 +180,31 @@ def test_box_flipping_between_small_and_big_keeps_the_id():
     for f in range(90):
         box = big if (f // 3) % 2 == 0 else small
         assert t.update([box] if f % 7 else []) == ([first] if f % 7 else [])
+
+
+def test_prop_that_never_moves_becomes_still_after_the_window():
+    # Orin: a lamp's box stays within detector jitter (spread 0.037 of box height; dancers 0.08-0.93).
+    t = PersonTracker()
+    for f in range(STILL_FRAMES):
+        j = (f % 5) - 2  # +-2 px jitter
+        [lamp] = t.update_tracks([BoundingBox(669 + j, 423 - j, 128, 241, 0.5)])
+        if f < STILL_FRAMES - 1:
+            assert not lamp.is_still()  # not before ~10 s of history
+    assert lamp.is_still()
+
+
+def test_dancer_is_never_still():
+    t = PersonTracker()
+    for f in range(2 * STILL_FRAMES):
+        [dancer] = t.update_tracks([_box(900 + 80 * math.sin(f / 15))])
+    assert not dancer.is_still()
+
+
+def test_still_person_who_starts_moving_is_shown_again_within_about_a_second():
+    t = PersonTracker()
+    for _ in range(STILL_FRAMES):
+        [tr] = t.update_tracks([_box(900)])
+    assert tr.is_still()
+    for f in range(40):
+        [tr] = t.update_tracks([_box(900 + 3 * f)])
+    assert not tr.is_still()

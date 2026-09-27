@@ -13,31 +13,42 @@ frames, so a one-frame detector miss doesn't reset it. A track is `confirmed` on
 two never gets a skeleton (and never uses up a colour).
 
 A confirmed track that expires is kept as "lost" for `max_lost` frames. A new box in the same spot gets the
-lost track back, with its ID, colour and head history, instead of a new ID. A far person with a weak detector
+lost track back, with its ID, colour and movement history, instead of a new ID. A far person with a weak detector
 score otherwise got a new ID every few seconds. "Same spot" is measured as the share of the smaller box that
 lies inside the other (>= `revive_overlap`), not IoU: that person's box also flips between a small and a big
 box (IoU 0.25).
 
-Head filter (`--head-filter`): each track records whether a head box was assigned to it in each of its last
-`HEAD_WINDOW` frames. On the Orin, people had a head in 42-100% of frames (also when facing away) and false
-positives in 8-33%. A track is shown once the rate reaches HEAD_SHOW and hidden again only below HEAD_HIDE,
-so it doesn't flicker near the threshold. The 5 s window keeps a false positive at ~30% from reaching
-HEAD_SHOW by chance.
+Still tracks (`--drop-still`, issue #7): props (a lamp, a bar stool, a chair) are detected as people, and no
+per-frame score separates them from people (issue #3), and they move when the unit is moved. Over ~10 s a
+prop's box stays put while a moving person's drifts. `Track.is_still()` is true once the track has
+STILL_FRAMES matched frames and the 90th-percentile distance of its box centre from the median, relative to
+box height, is below STILL_SPREAD. Orin (Just Dance, 3 min): dancers 0.08-0.93, a person standing still
+0.055, a prop 0.037. A person sitting very still (0.025 at a desk) is dropped too; accepted for party use.
+A dropped track is shown again after about 1 s of movement (10% of the window moved).
 
 Each track keeps a short history of box centres for venue calibration (issue #7).
 """
 from __future__ import annotations
 
+import math
+import statistics
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, List, Optional, Tuple
 
 from src.types import BoundingBox
 
-HEAD_WINDOW = 150      # frames of head history per track (5 s at 30 FPS)
-HEAD_MIN_FRAMES = 30   # no decision before this many frames
-HEAD_SHOW = 0.45       # head rate at which a hidden track is shown
-HEAD_HIDE = 0.35       # head rate below which a shown track is hidden
+STILL_FRAMES = 300     # ~10 s at 30 FPS
+STILL_SPREAD = 0.045   # box centre spread (fraction of box height) below which a track counts as still
+
+
+def centre_spread(samples) -> float:
+    """90th-percentile distance of the (cx, cy) centres from their median, relative to the median height."""
+    xs, ys, hs = zip(*samples)
+    mx, my = statistics.median(xs), statistics.median(ys)
+    mh = max(statistics.median(hs), 1.0)
+    d = sorted(math.dist((x, y), (mx, my)) / mh for x, y in zip(xs, ys))
+    return d[int(0.9 * (len(d) - 1))]
 
 
 def iou(a: BoundingBox, b: BoundingBox) -> float:
@@ -72,23 +83,11 @@ class Track:
     confirmed: bool = False  # matched in at least min_hits frames; stays True until the track expires
     face_hits: int = 0       # frames in which the app's face model clearly found a face in this track's head box
     history: Deque[Tuple[float, float]] = field(default_factory=lambda: deque(maxlen=300))
-    head_seen: Deque[bool] = field(default_factory=lambda: deque(maxlen=HEAD_WINDOW))
-    head_ok: bool = False    # head filter decision, see note_head()
+    recent: Deque[Tuple[float, float, float]] = field(default_factory=lambda: deque(maxlen=STILL_FRAMES))
 
-    def head_rate(self) -> float:
-        """Share of the last HEAD_WINDOW frames in which this track got a head box."""
-        return sum(self.head_seen) / len(self.head_seen) if self.head_seen else 0.0
-
-    def note_head(self, had_head: bool) -> None:
-        """Record whether this track got a head box this frame, and update head_ok."""
-        self.head_seen.append(had_head)
-        if len(self.head_seen) < HEAD_MIN_FRAMES:
-            return
-        rate = self.head_rate()
-        if rate >= HEAD_SHOW:
-            self.head_ok = True
-        elif rate < HEAD_HIDE:
-            self.head_ok = False
+    def is_still(self) -> bool:
+        """True once the box hasn't moved beyond detector jitter over the last STILL_FRAMES matched frames."""
+        return len(self.recent) == STILL_FRAMES and centre_spread(self.recent) < STILL_SPREAD
 
     def predicted(self) -> BoundingBox:
         """The last box moved by the velocity over the frames since it was seen."""
@@ -204,6 +203,7 @@ class PersonTracker:
             if out[bi] is None:
                 track = Track(id=self._next_id, box=box, confirmed=self.min_hits <= 1)
                 track.history.append(_centre(box))
+                track.recent.append((*_centre(box), box.h))
                 self._next_id += 1
                 self.tracks.append(track)
                 out[bi] = track
@@ -223,3 +223,4 @@ class PersonTracker:
         if track.hits >= self.min_hits:
             track.confirmed = True
         track.history.append((nx, ny))
+        track.recent.append((nx, ny, box.h))

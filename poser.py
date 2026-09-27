@@ -18,7 +18,6 @@ from src.renderer import Renderer
 from src.fps_counter import FPSCounter
 from src.tracker import PersonTracker
 from src.track_stats import TrackStats
-from src.venue import ignored_by, load_venue
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult
 
 
@@ -218,9 +217,6 @@ def main():
     body_proc   = BodyProcessor(model_manager) if config.body else None
 
     tracker     = PersonTracker()
-    ignore_zones = load_venue(config.venue) if config.venue else []
-    if ignore_zones:
-        print(f'[VENUE] ignoring {len(ignore_zones)} zones: ' + ', '.join(z.name for z in ignore_zones), flush=True)
     track_stats = TrackStats() if config.track_report > 0 else None
     last_report = time.monotonic()
     require_face = config.require_face and face_proc is not None
@@ -248,7 +244,7 @@ def main():
     # Accumulated ms per stage (capture, person, face, hands, body, render); printed as 60-frame averages with --fps.
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'render')}
-    counts = {k: 0 for k in ('bodies', 'people', 'drawn', 'heads', 'hands', 'faces_run', 'hands_run')}
+    counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'hands_run')}
     face_logits: List[float] = []  # face model logits of drawn faces, for tuning FACE_VERIFY_PRESENCE
 
     dump_dir = Path(config.dump_detections) if config.dump_detections else None
@@ -292,24 +288,18 @@ def main():
                 # flickering false positive gets no skeleton and can't take a real person's head or hands.
                 tracks = tracker.update_tracks(detections.body_boxes)
                 track_ids = [tr.id for tr in tracks]
-                # Venue ignore zones (issue #7): props that keep being detected in the same place are not
-                # people, and don't get a head, hands, or the face and body models.
-                people = sorted(((tr, box) for tr, box in zip(tracks, detections.body_boxes)
-                                 if tr.confirmed and not ignored_by(box, ignore_zones)),
+                # --drop-still (issue #7): a track that hasn't moved for ~10 s is a prop (or someone very
+                # still); it gets no head, hands, or face and body models.
+                confirmed = [(tr, box) for tr, box in zip(tracks, detections.body_boxes) if tr.confirmed]
+                people = sorted(((tr, box) for tr, box in confirmed if not (config.drop_still and tr.is_still())),
                                 key=lambda p: (-p[0].age, p[0].id))
+                counts['still'] += len(confirmed) - len(people)
                 free_hands = list(detections.hand_boxes)
                 heads = _assign_heads([box for _, box in people], detections.head_boxes)
                 counts['people'] += len(people)
                 for (track, body_bbox), head_bbox in zip(people, heads):
                     person_id = track.id
-                    track.note_head(head_bbox is not None)
-                    head_info = dict(head_rate=track.head_rate(), head_ok=track.head_ok)
-                    # --head-filter: skip tracks that rarely have a head (props), before the face and body
-                    # models run on them.
-                    if config.head_filter and not track.head_ok:
-                        if track_stats:
-                            track_stats.update(track.id, body_bbox, head_bbox is not None, None, None, **head_info)
-                        continue
+                    still = track.is_still()
                     person_hands = _claim_hands(body_bbox, free_hands)
                     face_logit = body = None
 
@@ -331,7 +321,7 @@ def main():
                     if require_face and track.face_hits < FACE_VERIFY_HITS:
                         if track_stats:
                             track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, None,
-                                               **head_info)
+                                               still=still)
                         continue
                     counts['drawn'] += 1
                     id_labels.append((person_id, body_bbox))
@@ -354,7 +344,7 @@ def main():
 
                     if track_stats:
                         track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, body,
-                                           **head_info)
+                                           still=still)
 
                 if track_stats and time.monotonic() - last_report >= config.track_report:
                     last_report = time.monotonic()
