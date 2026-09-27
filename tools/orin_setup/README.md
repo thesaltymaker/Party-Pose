@@ -81,3 +81,15 @@ A stop during the first run after an env rebuild, while TensorRT engines build, 
 - `sudo systemctl stop party-pose` over ssh: log ends with `[EXIT] SIGTERM received` and `[EXIT] camera released`; `sudo systemctl start party-pose` works straight after.
 - Esc on an attached keyboard: `[EXIT] quit key pressed`, and `systemctl status party-pose` shows inactive (not restarting).
 - `pkill -KILL -f poser.py`: `systemctl status party-pose` shows it restarting within about 5 s.
+
+### Diagnosing false positives without saving images
+
+`--show-ids` draws each person's track number (`#3`) on screen; `--track-report 10` prints one text line per track to the log every 10 seconds (box position and size, detector score, box and limb movement relative to box height, pose score, how often a head was matched, face scores). No images are saved.
+
+```sh
+# in ~/.config/party-pose/party-pose.env
+POSER_ARGS="--platform orin --fullscreen --fps --show-ids --track-report 10"
+sudo systemctl restart party-pose
+# after a minute or two, note which #ids on screen are people, then:
+journalctl -u party-pose --since "5 min ago" | grep -E '\[TRACK\]|\[FACES\]|\[STAGES' | tail -60
+```

@@ -16,6 +16,7 @@ from src.body_processor import BodyProcessor
 from src.renderer import Renderer
 from src.fps_counter import FPSCounter
 from src.tracker import PersonTracker
+from src.track_stats import TrackStats
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult
 
 
@@ -199,6 +200,8 @@ def main():
     body_proc   = BodyProcessor(model_manager) if config.body else None
 
     tracker     = PersonTracker()
+    track_stats = TrackStats() if config.track_report > 0 else None
+    last_report = time.monotonic()
     require_face = config.require_face and face_proc is not None
     renderer    = Renderer(show_roi=config.show_roi)
     fps_counter = FPSCounter()
@@ -250,6 +253,7 @@ def main():
             all_body_results: List[BodyResult] = []
             detections = None
             track_ids: List[int] = []
+            id_labels = []  # (track id, body box) for --show-ids
 
             if person_proc:
                 t = time.perf_counter()
@@ -273,6 +277,7 @@ def main():
                 for (track, body_bbox), head_bbox in zip(people, heads):
                     person_id = track.id
                     person_hands = _claim_hands(body_bbox, free_hands)
+                    face_logit = body = None
 
                     if face_proc and head_bbox is not None:
                         t = time.perf_counter()
@@ -282,15 +287,19 @@ def main():
                         if face is not None:
                             face.person_id = person_id
                             all_face_results.append(face)
-                            face_logits.append(math.log(face.presence / max(1e-12, 1 - face.presence)))
+                            face_logit = math.log(face.presence / max(1e-12, 1 - face.presence))
+                            face_logits.append(face_logit)
                             if face.presence >= FACE_VERIFY_PRESENCE:
                                 track.face_hits += 1
 
                     # A body is only drawn once the face model has clearly seen a real face in its own head box
                     # in a few frames. The lamp and other static false positives never show one (issue #3).
                     if require_face and track.face_hits < FACE_VERIFY_HITS:
+                        if track_stats:
+                            track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, None)
                         continue
                     counts['drawn'] += 1
+                    id_labels.append((person_id, body_bbox))
 
                     if hand_proc and person_hands:
                         t = time.perf_counter()
@@ -307,6 +316,14 @@ def main():
                         if body is not None:
                             body.person_id = person_id
                             all_body_results.append(body)
+
+                    if track_stats:
+                        track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, body)
+
+                if track_stats and time.monotonic() - last_report >= config.track_report:
+                    last_report = time.monotonic()
+                    for line in track_stats.report({t.id for t in tracker.tracks}):
+                        print(line, flush=True)
 
             # Timing for the final stage: GPU download, drawing, imshow, and waitKey.
             t_render = time.perf_counter()
@@ -331,6 +348,8 @@ def main():
             renderer.draw_faces(cpu_frame, all_face_results, display_w, display_h, cs_x, cs_y)
             renderer.draw_hands(cpu_frame, all_hand_results, display_w, display_h, cs_x, cs_y)
             renderer.draw_body(cpu_frame, all_body_results, display_w, display_h, cs_x, cs_y)
+            if config.show_ids:
+                renderer.draw_ids(cpu_frame, id_labels, cs_x, cs_y)
 
             if dump_now:
                 dump_n += 1

@@ -19,6 +19,8 @@ class Config:
     dump_detections: str = ""  # debug: directory for annotated frames + detection JSON ("" = off)
     dump_every: float = 2.0
     fullscreen: bool = False
+    show_ids: bool = False      # draw '#<track id>' on each person
+    track_report: float = 0.0   # seconds between [TRACK] stat lines (0 = off)
     require_face: bool = False  # draw a person only once a real face has been seen in their track
 
 def detect_platform() -> str:
@@ -52,6 +54,9 @@ def parse_args() -> Config:
     parser.add_argument("--dump-detections", default="", metavar="DIR", help="Save annotated frames + detection scores as JSON to DIR")
     parser.add_argument("--dump-every", type=float, default=2.0, help="Seconds between dumps (with --dump-detections)")
     parser.add_argument("--fullscreen", action="store_true", help="Show the output full screen (no title bar); Esc or q quits")
+    parser.add_argument("--show-ids", action="store_true", help="Draw each person's track number on screen")
+    parser.add_argument("--track-report", type=float, default=0.0, metavar="SECONDS",
+                        help="Print per-track statistics (text only) every SECONDS (0 = off)")
     parser.add_argument("--require-face", action="store_true",
                         help="Draw a tracked body only after a real face was seen in it (fewer false positives; "
                              "people facing away are not drawn)")
@@ -88,5 +93,7 @@ def parse_args() -> Config:
         dump_detections=args.dump_detections,
         dump_every=args.dump_every,
         fullscreen=args.fullscreen,
+        show_ids=args.show_ids,
+        track_report=args.track_report,
         require_face=args.require_face,
     )

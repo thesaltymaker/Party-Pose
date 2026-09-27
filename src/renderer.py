@@ -104,6 +104,14 @@ class Renderer:
                         -0.05 * frame_w <= ex <= 1.05 * frame_w and -0.05 * frame_h <= ey <= 1.05 * frame_h):
                     cv2.line(cpu_frame, (px, py), (ex, ey), color, 2)
 
+    def draw_ids(self, cpu_frame: np.ndarray, labels, cs_x: float = 1.0, cs_y: float = 1.0) -> None:
+        """Draw '#<track id>' at the top-left of each person's body box (--show-ids)."""
+        for track_id, box in labels:
+            color = PERSON_COLORS[track_id % len(PERSON_COLORS)]
+            org = (int(box.x * cs_x) + 4, max(30, int(box.y * cs_y) + 30))
+            cv2.putText(cpu_frame, f'#{track_id}', org, cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 5)
+            cv2.putText(cpu_frame, f'#{track_id}', org, cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+
     def draw_fps(self, cpu_frame: np.ndarray, fps: float) -> None:
         cv2.putText(cpu_frame, f'FPS: {fps:.1f}', (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, COLOR_FPS, 2)
