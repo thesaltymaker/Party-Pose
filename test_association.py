@@ -80,3 +80,12 @@ def test_screen_size_prefers_connected_output(monkeypatch):
     out2 = 'Screen 0: minimum 8 x 8, current 2560 x 1440, maximum 32767 x 32767\n'
     monkeypatch.setattr(subprocess, 'run', lambda *a, **k: subprocess.CompletedProcess(a, 0, out2, ''))
     assert _screen_size() == (2560, 1440)
+
+
+def test_head_stays_with_the_older_track_when_both_fit():
+    # Bodies come oldest track first; the head must not hop to a newer duplicate box that fits slightly better
+    # (that made face colours flicker on the Orin).
+    older = _box(100, 100, 220, 400)
+    newer = _box(110, 100, 200, 400)
+    head = _box(180, 110, 60, 60)
+    assert _assign_heads([older, newer], [head]) == [head, None]

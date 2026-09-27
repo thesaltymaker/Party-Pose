@@ -41,6 +41,6 @@ def test_fullscreen_flag(monkeypatch):
 
 def test_require_face_flag(monkeypatch):
     monkeypatch.setattr('sys.argv', ['poser.py', '--platform', 'laptop'])
-    assert parse_args().require_face is True
-    monkeypatch.setattr('sys.argv', ['poser.py', '--platform', 'laptop', '--no-require-face'])
     assert parse_args().require_face is False
+    monkeypatch.setattr('sys.argv', ['poser.py', '--platform', 'laptop', '--require-face'])
+    assert parse_args().require_face is True

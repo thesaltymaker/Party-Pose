@@ -1,5 +1,6 @@
 import sys
 import json
+import math
 import signal
 import time
 from pathlib import Path
@@ -36,15 +37,17 @@ def _head_fit(body: BoundingBox, head: BoundingBox) -> Optional[float]:
 
 
 def _assign_heads(bodies: List[BoundingBox], heads: List[BoundingBox]) -> List[Optional[BoundingBox]]:
-    """Give each body at most one head and each head to at most one body: best fits first (issue #6)."""
-    pairs = sorted((fit, bi, hi) for bi, body in enumerate(bodies) for hi, head in enumerate(heads)
-                   if (fit := _head_fit(body, head)) is not None)
+    """Give each body at most one head and each head to at most one body (issue #6).
+
+    Bodies are served in the order given (the app passes the oldest track first, so a person's head stays
+    with the same track and colour); each takes the best-fitting free head.
+    """
     out: List[Optional[BoundingBox]] = [None] * len(bodies)
-    used = set()
-    for _, bi, hi in pairs:
-        if out[bi] is None and hi not in used:
-            out[bi] = heads[hi]
-            used.add(hi)
+    free = list(heads)
+    for bi, body in enumerate(bodies):
+        fits = [(fit, hi) for hi, head in enumerate(free) if (fit := _head_fit(body, head)) is not None]
+        if fits:
+            out[bi] = free.pop(min(fits)[1])
     return out
 
 
@@ -137,9 +140,10 @@ def _fit(src_w: int, src_h: int, max_w: int, max_h: int) -> tuple:
     return round(src_w * scale), round(src_h * scale)
 
 
-# A track counts as a person after FACE_VERIFY_HITS frames with a face scored at least FACE_VERIFY_PRESENCE.
-# 0.993 is a logit of +5: real frontal faces on the Orin scored +8 to +27, non-faces -1 to -23 (issue #3).
-FACE_VERIFY_PRESENCE = 0.993
+# With --require-face, a track counts as a person after FACE_VERIFY_HITS frames with a face scored at least
+# FACE_VERIFY_PRESENCE. Not yet tuned on live Orin scores: a logit of +5 (0.993), taken from issue #3's offline
+# replay, was never reached live. The [STAGES] log prints the live face logits (face_logit=) to set it from.
+FACE_VERIFY_PRESENCE = 0.95
 FACE_VERIFY_HITS = 2
 
 WINDOW_NAME = 'Poser'
@@ -219,6 +223,7 @@ def main():
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'render')}
     counts = {k: 0 for k in ('bodies', 'people', 'drawn', 'heads', 'hands', 'faces_run', 'hands_run')}
+    face_logits: List[float] = []  # face model logits of drawn faces, for tuning FACE_VERIFY_PRESENCE
 
     dump_dir = Path(config.dump_detections) if config.dump_detections else None
     if dump_dir:
@@ -277,6 +282,7 @@ def main():
                         if face is not None:
                             face.person_id = person_id
                             all_face_results.append(face)
+                            face_logits.append(math.log(face.presence / max(1e-12, 1 - face.presence)))
                             if face.presence >= FACE_VERIFY_PRESENCE:
                                 track.face_hits += 1
 
@@ -355,6 +361,11 @@ def main():
                 if fps_counter._print_counter == 60:
                     for name, sess in model_manager._sessions.items():
                         print(f'[PROVIDERS] {name}: {sess.get_providers()}', flush=True)
+                if face_logits:
+                    fl = sorted(face_logits)
+                    print(f'[FACES] logit min={fl[0]:.1f} median={fl[len(fl) // 2]:.1f} max={fl[-1]:.1f} n={len(fl)}',
+                          flush=True)
+                face_logits.clear()
                 stage_ms = dict.fromkeys(stage_ms, 0.0)
                 counts = dict.fromkeys(counts, 0)
     except KeyboardInterrupt:

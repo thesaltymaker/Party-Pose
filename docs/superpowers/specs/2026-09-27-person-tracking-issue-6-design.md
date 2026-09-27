@@ -29,7 +29,7 @@ With two people the Orin logged ~4.8 body boxes and ~2 heads per frame, and colo
 
 Second Orin run: colours stable, but many body false positives, not helped by more light. Per-frame detector and pose scores can't separate the lamp from a seated person (issue #3). The face model's face score can: real faces score high, the ball, lampshade, backs of heads and clutter low; that check already stops face meshes on the ball.
 
-With tracks, it now gates bodies too: a confirmed track is drawn (and runs the hand and pose models) only after the face model has accepted a face in its head box at least once (`Track.face_hits`). After that the person stays drawn while tracked, even when they turn away. Cost: someone who enters facing away is drawn from the first frame they face the camera. `--no-require-face` turns it off; with `--no-face` it is off. `[STAGES]` logs `drawn=` beside `people=`.
+With tracks, it now gates bodies too: a confirmed track is drawn (and runs the hand and pose models) only after the face model has accepted a face in its head box at least once (`Track.face_hits`). After that the person stays drawn while tracked, even when they turn away. Cost: someone who enters facing away is drawn from the first frame they face the camera. Now opt-in with `--require-face` (see below); with `--no-face` it is off. `[STAGES]` logs `drawn=` beside `people=`.
 
 ### Third Orin run: three people, two facing away
 
@@ -39,6 +39,16 @@ With tracks, it now gates bodies too: a confirmed track is drawn (and runs the h
 - **One weak accept was enough**, and over thousands of frames a borderline non-face eventually passes. A track now needs `FACE_VERIFY_HITS=2` frames with presence ≥ `FACE_VERIFY_PRESENCE=0.993` (logit +5; real frontal faces measured +8 to +27, non-faces −1 to −23). Faces are still drawn from 0.5.
 
 People facing away are, by design, not drawn until they face the camera once. Showing them without a face needs another signal, e.g. movement (#7).
+
+### Fourth Orin run: no bodies at all
+
+With the +5 logit threshold no track was ever verified, so no bodies were drawn; the offline logits from issue #3 did not hold live. Faces also changed colour, because best-fit head matching moved a head between overlapping boxes from frame to frame.
+
+Changes:
+
+- The face gate is opt-in (`--require-face`), threshold 0.95 until live numbers exist. By default every confirmed track is drawn again (the behaviour that tracked people with stable colours).
+- Heads go to bodies oldest track first; each takes its best-fitting free head, and a head only fits in the body box's top 45% and at ≥ 0.15 of its width. The head stays with the same track and colour.
+- With `--fps`, a `[FACES] logit min/median/max` line every 60 frames gives the live face scores to set `FACE_VERIFY_PRESENCE` from.
 
 ## Tests
 
