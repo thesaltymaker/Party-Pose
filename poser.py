@@ -118,15 +118,6 @@ def _screen_size() -> Optional[tuple]:
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def _window_size(name: str) -> Optional[tuple]:
-    """(width, height) of the window's image area as OpenCV reports it, or None if unknown."""
-    try:
-        _, _, w, h = cv2.getWindowImageRect(name)
-    except cv2.error:
-        return None
-    return (w, h) if w > 0 and h > 0 else None
-
-
 def _fit(src_w: int, src_h: int, max_w: int, max_h: int) -> tuple:
     """Largest (w, h) with the source aspect ratio that fits in max_w x max_h."""
     scale = min(max_w / src_w, max_h / src_h)
@@ -191,17 +182,17 @@ def main():
 
     display_w = config.width  if config.width  > 0 else capture.width
     display_h = config.height if config.height > 0 else capture.height
-    # Full screen without --width/--height: draw at the screen's resolution (e.g. 2560x1440), not the camera's.
-    # Start from xrandr's monitor size, then follow the full-screen window's real size (checked every 30 frames).
-    auto_size = config.fullscreen and config.width <= 0 and config.height <= 0
-    if auto_size:
+    # Full screen without --width/--height: draw at the monitor's resolution (e.g. 2560x1440), not the camera's.
+    # The Orin's OpenCV (GTK) shows images unscaled in the top-left of a full-screen window, so the frame
+    # itself must be screen-sized. The window's reported size is not used: before the window manager makes it
+    # full screen, OpenCV reports a small default size (it shrank the picture to 1/16 of the screen).
+    if config.fullscreen and config.width <= 0 and config.height <= 0:
         screen = _screen_size()
         if screen:
             display_w, display_h = _fit(capture.width, capture.height, *screen)
-            print(f'[DISPLAY] xrandr screen {screen[0]}x{screen[1]}, drawing at {display_w}x{display_h}', flush=True)
+            print(f'[DISPLAY] screen {screen[0]}x{screen[1]}, drawing at {display_w}x{display_h}', flush=True)
         else:
-            print('[DISPLAY] xrandr gave no screen size; using the window size once it is shown', flush=True)
-    frame_n = 0
+            print('[DISPLAY] could not read the screen size (xrandr); pass --width/--height', flush=True)
     scale_display = (display_w != capture.width or display_h != capture.height)
     display_gpu = cv2.cuda_GpuMat()
 
@@ -326,13 +317,6 @@ def main():
                 print('[EXIT] quit key pressed', flush=True)
                 break
 
-            frame_n += 1
-            if auto_size and frame_n % 30 == 1:
-                window = _window_size(WINDOW_NAME)
-                if window and _fit(capture.width, capture.height, *window) != (display_w, display_h):
-                    display_w, display_h = _fit(capture.width, capture.height, *window)
-                    scale_display = (display_w != capture.width or display_h != capture.height)
-                    print(f'[DISPLAY] window {window[0]}x{window[1]}, drawing at {display_w}x{display_h}', flush=True)
             stage_ms['render'] += (time.perf_counter() - t_render) * 1000
 
             # Log 60-frame averages and execution provider info (TensorRT vs CUDA fallback), then reset accumulators.
