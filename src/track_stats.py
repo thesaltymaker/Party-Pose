@@ -95,7 +95,10 @@ class TrackStats:
                 continue
             x, y, w, h = (statistics.median(v) for v in zip(*st.boxes))
             face = (f'faces={len(st.face_logits)} logit_med={statistics.median(st.face_logits):.1f} '
-                    f'max={max(st.face_logits):.1f}') if st.face_logits else 'faces=0'
+                    f'max={max(st.face_logits):.1f} '
+                    f'kept={sum(v >= 0 for v in st.face_logits) / len(st.face_logits):.0%} '
+                    f'logit_p25={_pct(st.face_logits, 0.25):.1f} p75={_pct(st.face_logits, 0.75):.1f}'
+                    ) if st.face_logits else 'faces=0'
             lines.append(
                 f'[TRACK] #{tid} frames={st.frames} box=({x:.0f},{y:.0f} {w:.0f}x{h:.0f}) '
                 f'score={statistics.median(st.scores):.2f} '
@@ -120,3 +123,8 @@ def _spread(recent) -> str:
     mh = max(statistics.median(hs), 1.0)
     s = sorted(abs(h - mh) / mh for h in hs)
     return f'spread10s={centre_spread(recent):.3f} size10s={s[int(0.9 * (len(s) - 1))]:.3f}'
+
+
+def _pct(v: List[float], q: float) -> float:
+    s = sorted(v)
+    return s[int(q * (len(s) - 1))]

@@ -24,6 +24,7 @@ class FaceProcessor:
     def __init__(self, model_manager: ModelManager, enable_blendshapes: bool = False) -> None:
         self.model_manager = model_manager
         self.enable_blendshapes = enable_blendshapes
+        self.last_logit: Optional[float] = None  # face score logit of the last process() call, kept or not
 
     def process(
         self,
@@ -41,6 +42,7 @@ class FaceProcessor:
         session = self.model_manager.get_session('face_landmarks')
         landmarks_raw, presence_logit = session.run(['Identity', 'Identity_1'], {'input_12': roi_arr})
         landmarks_raw = landmarks_raw.reshape(-1, 478, 3)
+        self.last_logit = float(presence_logit.flat[0])
         presence = float(1.0 / (1.0 + np.exp(-np.clip(presence_logit.flat[0], -50, 50))))
         if presence < self.PRESENCE_THRESHOLD:
             return None

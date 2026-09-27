@@ -306,6 +306,7 @@ def main():
                     if face_proc and head_bbox is not None:
                         t = time.perf_counter()
                         face = face_proc.process(frame_gpu, head_bbox, frame_w, frame_h, config.mirror)
+                        face_logit = face_proc.last_logit  # also for rejected faces, in [TRACK] lines
                         stage_ms['face'] += (time.perf_counter() - t) * 1000
                         counts['faces_run'] += 1
                         if face is not None:

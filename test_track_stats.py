@@ -55,3 +55,11 @@ def test_report_shows_still_decision():
         ts.update(5, BoundingBox(200, 0, 50, 100, 0.3), True, None, None, still=False)
     lamp, dancer = ts.report({4, 5})
     assert lamp.endswith(' still=yes') and dancer.endswith(' still=no')
+
+
+def test_report_shows_share_of_kept_faces():
+    ts = TrackStats()
+    for f in range(20):
+        ts.update(8, BoundingBox(0, 0, 50, 100, 0.5), True, -3.0 if f % 4 else 2.0, None)
+    [line] = ts.report({8})
+    assert 'kept=25%' in line and 'logit_p25=-3.0' in line
