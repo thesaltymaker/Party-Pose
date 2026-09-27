@@ -25,6 +25,12 @@ With two people the Orin logged ~4.8 body boxes and ~2 heads per frame, and colo
 
 `[STAGES]` now logs `people=` (confirmed tracks per frame) next to `bodies=` (raw boxes).
 
+## Body false positives: require a face once per track
+
+Second Orin run: colours stable, but many body false positives, not helped by more light. Per-frame detector and pose scores can't separate the lamp from a seated person (issue #3). The face model's face score can: real faces score high, the ball, lampshade, backs of heads and clutter low; that check already stops face meshes on the ball.
+
+With tracks, it now gates bodies too: a confirmed track is drawn (and runs the hand and pose models) only after the face model has accepted a face in its head box at least once (`Track.face_seen`). After that the person stays drawn while tracked, even when they turn away. Cost: someone who enters facing away is drawn from the first frame they face the camera. `--no-require-face` turns it off; with `--no-face` it is off. `[STAGES]` logs `drawn=` beside `people=`.
+
 ## Tests
 
 `test_tracker.py`: detector order swapping, one missed frame, track expiry, leaving and re-entering (new ID, doesn't take another person's), two people crossing with one hidden at the crossing (fails without the velocity term), fast movement without overlap, a far box is a new person, history.

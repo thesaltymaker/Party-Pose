@@ -177,6 +177,7 @@ def main():
     body_proc   = BodyProcessor(model_manager) if config.body else None
 
     tracker     = PersonTracker()
+    require_face = config.require_face and face_proc is not None
     renderer    = Renderer(show_roi=config.show_roi)
     fps_counter = FPSCounter()
 
@@ -199,7 +200,7 @@ def main():
     # Accumulated ms per stage (capture, person, face, hands, body, render); printed as 60-frame averages with --fps.
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'render')}
-    counts = {k: 0 for k in ('bodies', 'people', 'heads', 'hands', 'faces_run', 'hands_run')}
+    counts = {k: 0 for k in ('bodies', 'people', 'drawn', 'heads', 'hands', 'faces_run', 'hands_run')}
 
     dump_dir = Path(config.dump_detections) if config.dump_detections else None
     if dump_dir:
@@ -257,6 +258,13 @@ def main():
                         if face is not None:
                             face.person_id = person_id
                             all_face_results.append(face)
+                            track.face_seen = True
+
+                    # A body is only drawn once the face model has seen a real face in its track. The lamp and
+                    # other static false positives never show one (their "heads" score as non-faces, issue #3).
+                    if require_face and not track.face_seen:
+                        continue
+                    counts['drawn'] += 1
 
                     if hand_proc and person_hands:
                         t = time.perf_counter()

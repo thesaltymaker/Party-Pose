@@ -19,6 +19,7 @@ class Config:
     dump_detections: str = ""  # debug: directory for annotated frames + detection JSON ("" = off)
     dump_every: float = 2.0
     fullscreen: bool = False
+    require_face: bool = True  # draw a person only once a real face has been seen in their track
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -51,7 +52,9 @@ def parse_args() -> Config:
     parser.add_argument("--dump-detections", default="", metavar="DIR", help="Save annotated frames + detection scores as JSON to DIR")
     parser.add_argument("--dump-every", type=float, default=2.0, help="Seconds between dumps (with --dump-detections)")
     parser.add_argument("--fullscreen", action="store_true", help="Show the output full screen (no title bar); Esc or q quits")
-    parser.set_defaults(face=True, body=True, hands=True)
+    parser.add_argument("--no-require-face", dest="require_face", action="store_false",
+                        help="Draw every tracked body, even ones where no face has been seen (more false positives)")
+    parser.set_defaults(face=True, body=True, hands=True, require_face=True)
     # Platform argument
     parser.add_argument(
         "--platform",
@@ -84,4 +87,5 @@ def parse_args() -> Config:
         dump_detections=args.dump_detections,
         dump_every=args.dump_every,
         fullscreen=args.fullscreen,
+        require_face=args.require_face,
     )
