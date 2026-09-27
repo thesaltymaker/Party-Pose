@@ -117,12 +117,18 @@ class Renderer:
                     cv2.line(cpu_frame, (px, py), (ex, ey), color, 2)
 
     def draw_ids(self, cpu_frame: np.ndarray, labels, cs_x: float = 1.0, cs_y: float = 1.0) -> None:
-        """Draw '#<track id>' at the top-left of each person's body box (--show-ids)."""
+        """Draw '#<track id>' at the top-left of each person's body box (--show-ids).
+
+        Text height scales with the frame (about 1/14 of it) so the numbers can be read from across a room.
+        """
+        scale = max(1.0, cpu_frame.shape[0] / 400)
+        thick = max(2, int(scale * 2))
         for track_id, box in labels:
             color = PERSON_COLORS[track_id % len(PERSON_COLORS)]
-            org = (int(box.x * cs_x) + 4, max(30, int(box.y * cs_y) + 30))
-            cv2.putText(cpu_frame, f'#{track_id}', org, cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 5)
-            cv2.putText(cpu_frame, f'#{track_id}', org, cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+            text_h = int(30 * scale)
+            org = (int(box.x * cs_x) + 4, max(text_h, int(box.y * cs_y) + text_h))
+            cv2.putText(cpu_frame, f'#{track_id}', org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick * 3)
+            cv2.putText(cpu_frame, f'#{track_id}', org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick)
 
     def draw_fps(self, cpu_frame: np.ndarray, fps: float) -> None:
         cv2.putText(cpu_frame, f'FPS: {fps:.1f}', (10, 30),
