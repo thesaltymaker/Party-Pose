@@ -1,5 +1,6 @@
 import sys
 import json
+import signal
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -77,6 +78,23 @@ def _drop_nested_bodies(body_boxes: List[BoundingBox], max_inside: float = 0.5) 
     ]
 
 
+WINDOW_NAME = 'Poser'
+QUIT_KEYS = (ord('q'), 27)  # q or Escape
+
+
+class _Terminated(Exception):
+    """Raised by the SIGTERM handler so the main loop unwinds through `finally` and releases the camera."""
+
+
+def _raise_terminated(signum, frame):
+    raise _Terminated()
+
+
+def _is_quit_key(key: int) -> bool:
+    """True for q or Escape. `key` is the raw cv2.waitKey() result (-1 when no key was pressed)."""
+    return key != -1 and (key & 0xFF) in QUIT_KEYS
+
+
 def main():
     config = parse_args()
     models_dir = Path(__file__).parent / 'models'
@@ -128,6 +146,14 @@ def main():
     if dump_dir:
         dump_dir.mkdir(parents=True, exist_ok=True)
     dump_n, last_dump = 0, 0.0
+
+    if config.fullscreen:
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+    # `systemctl stop party-pose` and `pkill -TERM -f poser.py` send SIGTERM; exit cleanly like Esc does (issue #8).
+    signal.signal(signal.SIGTERM, _raise_terminated)
+    exit_code = 0
 
     try:
         while True:
@@ -214,9 +240,10 @@ def main():
                 if fps_counter._print_counter % 60 == 0:
                     print(f"[FPS] {fps_counter.get_fps():.1f}", flush=True)
 
-            cv2.imshow('Poser', cpu_frame)
+            cv2.imshow(WINDOW_NAME, cpu_frame)
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            if _is_quit_key(cv2.waitKey(1)):
+                print('[EXIT] quit key pressed', flush=True)
                 break
             stage_ms['render'] += (time.perf_counter() - t_render) * 1000
 
@@ -231,12 +258,20 @@ def main():
                 stage_ms = dict.fromkeys(stage_ms, 0.0)
                 counts = dict.fromkeys(counts, 0)
     except KeyboardInterrupt:
-        pass
+        print('[EXIT] interrupted', flush=True)
+    except _Terminated:
+        print('[EXIT] SIGTERM received', flush=True)
     except RuntimeError as e:
+        # Non-zero so the systemd service restarts after e.g. a camera read failure.
         print(f'Runtime error: {e}', file=sys.stderr)
+        exit_code = 1
     finally:
+        # Ignore a second SIGTERM while the camera (nvargus) is being released.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         capture.release()
         cv2.destroyAllWindows()
+        print('[EXIT] camera released', flush=True)
+    sys.exit(exit_code)
 
 
 if __name__ == '__main__':
