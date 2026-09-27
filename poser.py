@@ -18,6 +18,7 @@ from src.renderer import Renderer
 from src.fps_counter import FPSCounter
 from src.tracker import PersonTracker
 from src.track_stats import TrackStats
+from src.venue import ignored_by, load_venue
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult
 
 
@@ -217,6 +218,9 @@ def main():
     body_proc   = BodyProcessor(model_manager) if config.body else None
 
     tracker     = PersonTracker()
+    ignore_zones = load_venue(config.venue) if config.venue else []
+    if ignore_zones:
+        print(f'[VENUE] ignoring {len(ignore_zones)} zones: ' + ', '.join(z.name for z in ignore_zones), flush=True)
     track_stats = TrackStats() if config.track_report > 0 else None
     last_report = time.monotonic()
     require_face = config.require_face and face_proc is not None
@@ -288,7 +292,10 @@ def main():
                 # flickering false positive gets no skeleton and can't take a real person's head or hands.
                 tracks = tracker.update_tracks(detections.body_boxes)
                 track_ids = [tr.id for tr in tracks]
-                people = sorted(((tr, box) for tr, box in zip(tracks, detections.body_boxes) if tr.confirmed),
+                # Venue ignore zones (issue #7): props that keep being detected in the same place are not
+                # people, and don't get a head, hands, or the face and body models.
+                people = sorted(((tr, box) for tr, box in zip(tracks, detections.body_boxes)
+                                 if tr.confirmed and not ignored_by(box, ignore_zones)),
                                 key=lambda p: (-p[0].age, p[0].id))
                 free_hands = list(detections.hand_boxes)
                 heads = _assign_heads([box for _, box in people], detections.head_boxes)

@@ -22,6 +22,7 @@ class Config:
     show_ids: bool = False      # draw '#<track id>' on each person
     track_report: float = 0.0   # seconds between [TRACK] stat lines (0 = off)
     require_face: bool = False  # draw a person only once a real face has been seen in their track
+    venue: str = ""             # venue file with ignore zones for props (issue #7); "" = none
     head_filter: bool = False   # draw a track only once a head box is found in enough of its recent frames
     skelly: bool = False        # filled bone-coloured face with eyes, nose and mouth cut out
     santa_hat: bool = False     # Santa hat on each face
@@ -63,6 +64,8 @@ def parse_args() -> Config:
     parser.add_argument("--require-face", action="store_true",
                         help="Draw a tracked body only after a real face was seen in it (fewer false positives; "
                              "people facing away are not drawn)")
+    parser.add_argument("--venue", default="", metavar="FILE",
+                        help="Venue file (JSON) with ignore zones: boxes where props are detected as people")
     parser.add_argument("--head-filter", action="store_true",
                         help="Draw a tracked body only when a head is found in enough of its recent frames "
                              "(hides props; works for people facing away)")
@@ -104,6 +107,7 @@ def parse_args() -> Config:
         show_ids=args.show_ids,
         track_report=args.track_report,
         require_face=args.require_face,
+        venue=args.venue,
         head_filter=args.head_filter,
         skelly=args.skelly,
         santa_hat=args.santa_hat,

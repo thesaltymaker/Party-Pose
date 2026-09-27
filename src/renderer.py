@@ -117,7 +117,7 @@ class Renderer:
                     cv2.line(cpu_frame, (px, py), (ex, ey), color, 2)
 
     def draw_ids(self, cpu_frame: np.ndarray, labels, cs_x: float = 1.0, cs_y: float = 1.0) -> None:
-        """Draw '#<track id>' at the top-left of each person's body box (--show-ids).
+        """Draw '#<track id>' at the top centre of each person's body box (--show-ids).
 
         Text height scales with the frame (about 1/14 of it) so the numbers can be read from across a room.
         """
@@ -126,7 +126,9 @@ class Renderer:
         for track_id, box in labels:
             color = PERSON_COLORS[track_id % len(PERSON_COLORS)]
             text_h = int(30 * scale)
-            org = (int(box.x * cs_x) + 4, max(text_h, int(box.y * cs_y) + text_h))
+            (text_w, _), _ = cv2.getTextSize(f'#{track_id}', cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+            # Centred on the box, so labels of side-by-side boxes (a person next to a lamp) don't sit together.
+            org = (int((box.x + box.w / 2) * cs_x - text_w / 2), max(text_h, int(box.y * cs_y) + text_h))
             cv2.putText(cpu_frame, f'#{track_id}', org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick * 3)
             cv2.putText(cpu_frame, f'#{track_id}', org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick)
 
