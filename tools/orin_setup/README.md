@@ -59,7 +59,7 @@ Needs your sudo password once. It installs `party-pose.service`, enables it at b
 What the service does on every start:
 
 1. As root (`service/prestart_root.sh`): checks the power mode is `MAXN_SUPER` (warns only, never changes it), then runs `jetson_clocks`. Both go to the journal.
-2. As you (`service/run.sh`): waits for the logged-in desktop on `:0`, closes the GNOME Activities overview (issue #1), then runs `env/bin/python poser.py $POSER_ARGS` (default `--platform orin --fullscreen --fps`).
+2. As you (`service/run.sh`): waits for the desktop session and reads its `DISPLAY`, `XAUTHORITY` and D-Bus address from the running `gnome-shell` process (the env file's values are only fallbacks), closes the GNOME Activities overview (issue #1), then runs `env/bin/python poser.py $POSER_ARGS` (default `--platform orin --fullscreen --fps`).
 
 The app needs a logged-in desktop. For it to come up at boot, turn on GDM auto-login (Settings > Users > Automatic Login). Without it the service waits until someone logs in.
 
