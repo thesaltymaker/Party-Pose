@@ -84,3 +84,24 @@ def test_history_records_centres():
     t.update([_box(510)])
     [track] = t.tracks
     assert list(track.history) == [(500, 500), (510, 500)]
+
+
+def test_track_is_confirmed_after_min_hits():
+    t = PersonTracker(min_hits=3)
+    assert [tr.confirmed for tr in t.update_tracks([_box(500)])] == [False]
+    assert [tr.confirmed for tr in t.update_tracks([_box(505)])] == [False]
+    assert [tr.confirmed for tr in t.update_tracks([_box(510)])] == [True]
+    t.update_tracks([])  # a missed frame doesn't unconfirm
+    assert [tr.confirmed for tr in t.update_tracks([_box(520)])] == [True]
+
+
+def test_flickering_false_positive_is_never_confirmed():
+    # A box that shows up every few frames in a new-ish place (e.g. detector noise) never reaches min_hits.
+    t = PersonTracker(min_hits=3, max_missed=1)
+    for f in range(30):
+        boxes = [_box(400)]
+        if f % 4 == 0:
+            boxes.append(_box(1500))
+        tracks = t.update_tracks(boxes)
+        assert all(not tr.confirmed for tr in tracks[1:])
+    assert tracks[0].confirmed

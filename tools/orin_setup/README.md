@@ -63,6 +63,8 @@ What the service does on every start:
 
 The app needs a logged-in desktop. For it to come up at boot, turn on GDM auto-login (Settings > Users > Automatic Login). Without it the service waits until someone logs in.
 
+With `--fullscreen` the frame is scaled on the GPU to the screen size read from `xrandr` (e.g. 2560x1440), keeping the aspect ratio; `--width/--height` override it. The log shows `[DISPLAY] screen ...`.
+
 | Action | Result |
 |---|---|
 | `sudo systemctl stop party-pose` or `pkill -TERM -f poser.py` | Window closes, camera released, no restart |

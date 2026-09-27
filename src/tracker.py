@@ -8,7 +8,9 @@ from earlier frames and returns a track ID per box. IDs are never reused, so a c
 Matching is greedy on a score of box overlap (IoU) against each track's predicted box (last box moved
 by its smoothed velocity, so two people crossing keep their IDs), with a centre-distance fallback for
 fast movement where boxes no longer overlap. A track that gets no match stays alive for `max_missed`
-frames, so a one-frame detector miss doesn't reset it.
+frames, so a one-frame detector miss doesn't reset it. A track is `confirmed` once it has been matched in
+`min_hits` frames; the app only draws confirmed tracks, so a false positive that flickers for a frame or
+two never gets a skeleton (and never uses up a colour).
 
 Each track keeps a short history of box centres for venue calibration (issue #7).
 """
@@ -41,6 +43,8 @@ class Track:
     vy: float = 0.0
     missed: int = 0          # frames since the last match
     age: int = 1             # frames since the track started
+    hits: int = 1            # frames in which the track was matched
+    confirmed: bool = False  # matched in at least min_hits frames; stays True until the track expires
     history: Deque[Tuple[float, float]] = field(default_factory=lambda: deque(maxlen=300))
 
     def predicted(self) -> BoundingBox:
@@ -54,8 +58,9 @@ class PersonTracker:
     """Assigns stable IDs to body boxes. Call `update()` once per frame, even with no boxes."""
 
     def __init__(self, max_missed: int = 15, min_iou: float = 0.2, max_centre_dist: float = 0.6,
-                 velocity_smoothing: float = 0.5) -> None:
+                 velocity_smoothing: float = 0.5, min_hits: int = 3) -> None:
         """
+        min_hits: frames a track must be matched in before it is confirmed (drawn).
         max_missed: frames a track survives without a match (15 = 0.5 s at 30 FPS).
         min_iou: minimum overlap between a box and a track's predicted box to match.
         max_centre_dist: fallback match when boxes don't overlap enough: centre distance, as a fraction
@@ -66,6 +71,7 @@ class PersonTracker:
         self.min_iou = min_iou
         self.max_centre_dist = max_centre_dist
         self.velocity_smoothing = velocity_smoothing
+        self.min_hits = min_hits
         self.tracks: List[Track] = []
         self._next_id = 0
 
@@ -88,6 +94,10 @@ class PersonTracker:
 
     def update(self, boxes: List[BoundingBox]) -> List[int]:
         """Match this frame's body boxes to tracks. Returns the track ID for each box, in order."""
+        return [t.id for t in self.update_tracks(boxes)]
+
+    def update_tracks(self, boxes: List[BoundingBox]) -> List[Track]:
+        """Like `update()`, but returns the Track for each box (for `confirmed` and `age`)."""
         pairs = []
         for ti, track in enumerate(self.tracks):
             for bi, box in enumerate(boxes):
@@ -96,15 +106,15 @@ class PersonTracker:
                     pairs.append((score, ti, bi))
         pairs.sort(reverse=True)
 
-        ids: List[Optional[int]] = [None] * len(boxes)
+        out: List[Optional[Track]] = [None] * len(boxes)
         matched_tracks = set()
         for _, ti, bi in pairs:
-            if ti in matched_tracks or ids[bi] is not None:
+            if ti in matched_tracks or out[bi] is not None:
                 continue
             matched_tracks.add(ti)
             track = self.tracks[ti]
             self._advance(track, boxes[bi])
-            ids[bi] = track.id
+            out[bi] = track
 
         for ti, track in enumerate(self.tracks):
             if ti not in matched_tracks:
@@ -114,14 +124,14 @@ class PersonTracker:
         self.tracks = [t for t in self.tracks if t.missed <= self.max_missed]
 
         for bi, box in enumerate(boxes):
-            if ids[bi] is None:
-                track = Track(id=self._next_id, box=box)
+            if out[bi] is None:
+                track = Track(id=self._next_id, box=box, confirmed=self.min_hits <= 1)
                 track.history.append(_centre(box))
                 self._next_id += 1
                 self.tracks.append(track)
-                ids[bi] = track.id
+                out[bi] = track
 
-        return ids  # type: ignore[return-value]
+        return out  # type: ignore[return-value]
 
     def _advance(self, track: Track, box: BoundingBox) -> None:
         (ox, oy), (nx, ny) = _centre(track.box), _centre(box)
@@ -132,4 +142,7 @@ class PersonTracker:
         track.box = box
         track.missed = 0
         track.age += 1
+        track.hits += 1
+        if track.hits >= self.min_hits:
+            track.confirmed = True
         track.history.append((nx, ny))

@@ -85,6 +85,39 @@ def _drop_nested_bodies(body_boxes: List[BoundingBox], max_inside: float = 0.5) 
     ]
 
 
+def _claim_parts(body: BoundingBox, heads: List[BoundingBox], hands: List[BoundingBox]):
+    """Find this body's head and hands, and remove them from the pools so no other body gets them.
+
+    Without this, a head inside two body boxes (a person plus a false positive around them) got a face mesh
+    per box, in two colours (issue #6).
+    """
+    head = _find_head_for_body(body, heads)
+    if head is not None:
+        heads.remove(head)
+    own_hands = _find_hands_for_body(body, hands)
+    for h in own_hands:
+        hands.remove(h)
+    return head, own_hands
+
+
+def _screen_size() -> Optional[tuple]:
+    """(width, height) of the X screen from `xrandr`, or None if it can't be read."""
+    import re
+    import subprocess
+    try:
+        out = subprocess.run(['xrandr', '--current'], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r'current (\d+) x (\d+)', out)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _fit(src_w: int, src_h: int, max_w: int, max_h: int) -> tuple:
+    """Largest (w, h) with the source aspect ratio that fits in max_w x max_h."""
+    scale = min(max_w / src_w, max_h / src_h)
+    return round(src_w * scale), round(src_h * scale)
+
+
 WINDOW_NAME = 'Poser'
 QUIT_KEYS = (ord('q'), 27)  # q or Escape
 
@@ -143,12 +176,21 @@ def main():
 
     display_w = config.width  if config.width  > 0 else capture.width
     display_h = config.height if config.height > 0 else capture.height
+    if config.fullscreen and config.width <= 0 and config.height <= 0:
+        # Draw at the screen's resolution (e.g. 2560x1440) instead of letting the window show the 1080p frame.
+        screen = _screen_size()
+        if screen:
+            display_w, display_h = _fit(capture.width, capture.height, *screen)
+            print(f'[DISPLAY] screen {screen[0]}x{screen[1]}, drawing at {display_w}x{display_h}', flush=True)
+        else:
+            print('[DISPLAY] could not read the screen size (xrandr); use --width/--height', flush=True)
     scale_display = (display_w != capture.width or display_h != capture.height)
+    display_gpu = cv2.cuda_GpuMat()
 
     # Accumulated ms per stage (capture, person, face, hands, body, render); printed as 60-frame averages with --fps.
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'render')}
-    counts = {k: 0 for k in ('bodies', 'heads', 'hands', 'faces_run', 'hands_run')}
+    counts = {k: 0 for k in ('bodies', 'people', 'heads', 'hands', 'faces_run', 'hands_run')}
 
     dump_dir = Path(config.dump_detections) if config.dump_detections else None
     if dump_dir:
@@ -186,10 +228,17 @@ def main():
                 counts['hands'] += len(detections.hand_boxes)
 
                 # Stable per-person IDs (and so colours) across frames (issue #6).
-                track_ids = tracker.update(detections.body_boxes)
-                for person_id, body_bbox in zip(track_ids, detections.body_boxes):
-                    head_bbox    = _find_head_for_body(body_bbox, detections.head_boxes)
-                    person_hands = _find_hands_for_body(body_bbox, detections.hand_boxes)
+                # Only confirmed tracks (seen in a few frames) are processed and drawn, oldest first, so a
+                # flickering false positive gets no skeleton and can't take a real person's head or hands.
+                tracks = tracker.update_tracks(detections.body_boxes)
+                track_ids = [tr.id for tr in tracks]
+                people = sorted(((tr, box) for tr, box in zip(tracks, detections.body_boxes) if tr.confirmed),
+                                key=lambda p: (-p[0].age, p[0].id))
+                free_heads, free_hands = list(detections.head_boxes), list(detections.hand_boxes)
+                counts['people'] += len(people)
+                for track, body_bbox in people:
+                    person_id = track.id
+                    head_bbox, person_hands = _claim_parts(body_bbox, free_heads, free_hands)
 
                     if face_proc and head_bbox is not None:
                         t = time.perf_counter()
@@ -218,18 +267,18 @@ def main():
 
             # Timing for the final stage: GPU download, drawing, imshow, and waitKey.
             t_render = time.perf_counter()
-            # Single GPU→CPU download for all drawing
-            cpu_frame = frame_gpu.download()
-            if config.black_bg:
-                cpu_frame[:] = 0
-
-            # Scale frame to display size before drawing so lines/points are native resolution
+            # Scale to display size on the GPU before the single GPU→CPU download, so lines/points are drawn
+            # at native resolution without a CPU resize.
             if scale_display:
-                cpu_frame = cv2.resize(cpu_frame, (display_w, display_h))
+                cv2.cuda.resize(frame_gpu, (display_w, display_h), display_gpu)
+                cpu_frame = display_gpu.download()
                 cs_x = display_w / frame_w
                 cs_y = display_h / frame_h
             else:
+                cpu_frame = frame_gpu.download()
                 cs_x = cs_y = 1.0
+            if config.black_bg:
+                cpu_frame[:] = 0
 
             dump_now = dump_dir and time.monotonic() - last_dump >= config.dump_every
             if dump_now:

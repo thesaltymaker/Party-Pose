@@ -16,6 +16,15 @@
 - **Cost.** O(tracks × boxes) arithmetic per frame, well under 0.1 ms; no effect on the Orin's ~30 FPS.
 - **Debug dumps.** `--dump-detections` JSON has `track_id` on each body entry, and the overlay labels body boxes `#<id>`.
 
+## After the first Orin run
+
+With two people the Orin logged ~4.8 body boxes and ~2 heads per frame, and colours still changed every frame. Two causes, both fixed:
+
+- **Unconfirmed tracks were drawn.** A flickering false positive got a skeleton and a fresh ID (colour) each time it reappeared. Tracks are now `confirmed` after `min_hits=3` matched frames; only confirmed tracks run the face/hand/pose models and are drawn. Fewer pose runs per frame, too.
+- **A head (or hand) was drawn once per body box containing it**, so a false-positive box around a real person drew a second face mesh in another colour, with the top one changing by score. Bodies now claim heads and hands exclusively, oldest track first (`_claim_parts`).
+
+`[STAGES]` now logs `people=` (confirmed tracks per frame) next to `bodies=` (raw boxes).
+
 ## Tests
 
 `test_tracker.py`: detector order swapping, one missed frame, track expiry, leaving and re-entering (new ID, doesn't take another person's), two people crossing with one hidden at the crossing (fails without the velocity term), fast movement without overlap, a far box is a new person, history.

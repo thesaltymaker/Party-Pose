@@ -37,3 +37,21 @@ def test_separate_bodies_are_kept():
     a = _box(100, 100, 200, 400, conf=0.9)
     b = _box(600, 100, 200, 400, conf=0.4)
     assert _drop_nested_bodies([a, b]) == [a, b]
+
+
+def test_head_and_hands_go_to_only_one_body():
+    # Issue #6: a head inside both a person's box and a false-positive box around them got two face meshes.
+    from poser import _claim_parts
+    person = _box(100, 100, 200, 400)
+    around = _box(50, 50, 400, 500, conf=0.4)
+    heads = [_box(150, 110, 60, 60)]
+    hands = [_box(90, 250, 40, 40)]
+    head, own_hands = _claim_parts(person, heads, hands)
+    assert head is not None and len(own_hands) == 1
+    assert _claim_parts(around, heads, hands) == (None, [])
+
+
+def test_fit_keeps_aspect_ratio():
+    from poser import _fit
+    assert _fit(1920, 1080, 2560, 1440) == (2560, 1440)
+    assert _fit(1920, 1080, 2560, 1600) == (2560, 1440)
