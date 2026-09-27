@@ -14,6 +14,7 @@ from src.hand_processor import HandProcessor
 from src.body_processor import BodyProcessor
 from src.renderer import Renderer
 from src.fps_counter import FPSCounter
+from src.tracker import PersonTracker
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult
 
 
@@ -38,13 +39,16 @@ def _find_hands_for_body(body: BoundingBox, hand_boxes: List[BoundingBox]) -> Li
     ]
 
 
-def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies, cs_x: float, cs_y: float) -> None:
+def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies, cs_x: float, cs_y: float,
+                track_ids: Optional[List[int]] = None) -> None:
     """Debug: save the frame with detector boxes + scores drawn, and all scores as JSON."""
     def rec(b):
         return {'score': round(b.confidence, 3), 'bbox': [round(v) for v in (b.x, b.y, b.w, b.h)]}
 
     boxes = {'body': detections.body_boxes, 'head': detections.head_boxes, 'hand': detections.hand_boxes} if detections else {}
     data = {cls: [rec(b) for b in bs] for cls, bs in boxes.items()}
+    for entry, track_id in zip(data.get('body', []), track_ids or []):
+        entry['track_id'] = track_id
     data['face_results'] = [{'person_id': f.person_id, 'presence': round(f.presence, 3), 'bbox': rec(f.bbox)['bbox']} for f in faces]
     data['hand_results'] = [{'person_id': h.person_id, 'presence': round(h.presence, 3), 'bbox': rec(h.bbox)['bbox']} for h in hands]
     data['body_results'] = [{'person_id': b.person_id, 'presence': round(b.presence, 3)} for b in bodies]
@@ -53,11 +57,14 @@ def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies,
     out = frame.copy()
     colors = {'body': (0, 0, 255), 'head': (0, 255, 0), 'hand': (255, 128, 0)}
     for cls, bs in boxes.items():
-        for b in bs:
+        for i, b in enumerate(bs):
+            label = f'{cls} {b.confidence:.2f}'
+            if cls == 'body' and track_ids:
+                label = f'#{track_ids[i]} ' + label
             p1 = (int(b.x * cs_x), int(b.y * cs_y))
             p2 = (int((b.x + b.w) * cs_x), int((b.y + b.h) * cs_y))
             cv2.rectangle(out, p1, p2, colors[cls], 2)
-            cv2.putText(out, f'{cls} {b.confidence:.2f}', (p1[0], max(12, p1[1] - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colors[cls], 2)
+            cv2.putText(out, label, (p1[0], max(12, p1[1] - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colors[cls], 2)
     cv2.imwrite(str(dump_dir / f'frame_{n:04d}.jpg'), out)
 
 
@@ -130,6 +137,7 @@ def main():
     hand_proc   = HandProcessor(model_manager) if config.hands else None
     body_proc   = BodyProcessor(model_manager) if config.body else None
 
+    tracker     = PersonTracker()
     renderer    = Renderer(show_roi=config.show_roi)
     fps_counter = FPSCounter()
 
@@ -166,6 +174,7 @@ def main():
             all_hand_results: List[HandResult] = []
             all_body_results: List[BodyResult] = []
             detections = None
+            track_ids: List[int] = []
 
             if person_proc:
                 t = time.perf_counter()
@@ -176,7 +185,9 @@ def main():
                 counts['heads'] += len(detections.head_boxes)
                 counts['hands'] += len(detections.hand_boxes)
 
-                for person_id, body_bbox in enumerate(detections.body_boxes):
+                # Stable per-person IDs (and so colours) across frames (issue #6).
+                track_ids = tracker.update(detections.body_boxes)
+                for person_id, body_bbox in zip(track_ids, detections.body_boxes):
                     head_bbox    = _find_head_for_body(body_bbox, detections.head_boxes)
                     person_hands = _find_hands_for_body(body_bbox, detections.hand_boxes)
 
@@ -231,7 +242,8 @@ def main():
             if dump_now:
                 dump_n += 1
                 last_dump = time.monotonic()
-                _dump_frame(dump_dir, dump_n, cpu_frame, detections, all_face_results, all_hand_results, all_body_results, cs_x, cs_y)
+                _dump_frame(dump_dir, dump_n, cpu_frame, detections, all_face_results, all_hand_results, all_body_results, cs_x, cs_y,
+                            track_ids)
 
             fps_counter.tick()
             if config.show_fps:
