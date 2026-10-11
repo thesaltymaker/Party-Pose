@@ -51,3 +51,13 @@
 - **One Euro smoothing on landmarks, not on crops.** Smoothing the landmarks per person (speed in object sizes per second) made the skeleton steady without visible lag, at 1.3 ms per frame on the Orin (still ~31 FPS). Smoothing the head box would move the face off-centre in its crop, and the face model loses faces when that happens (issue #6/#7).
 - **Log why a new ID starts.** `[NEW-ID]` names the nearest old track (live/lost, distance, size, overlap). On the first run it showed two boxes on one person (`live missed=0 overlap 0.4`), not a lost person — a cause no one had guessed.
 - **Small artefacts matter to the viewer.** The pose model's finger points (17-22) drawn on top of the hand model's hands looked wrong; the body now stops at the wrists.
+
+## Speed on the Orin: replay a clip, change one thing at a time (2026-10-11)
+
+- **Benchmark on a recorded clip, not live.** FPS depends on who is dancing; a 60 s raw clip of two people (`tools/orin_bench/record_video.py`, replayed with `poser.py --video`) gives runs that repeat within 0.2 FPS. `tools/orin_bench/clip_bench.sh` runs it with the service's arguments.
+- **Check the benchmark's own costs first.** The first replays showed 23 FPS; 10 ms of every frame was the clip reader (a sync 6 MB read per frame, and the page cache it filled made a later GPU allocation fail with NvMap error 12). Reading ahead in a thread and dropping frames from the cache gave the real baseline: 27.6 FPS.
+- **Interleave A/B runs.** Measured in sequence, reusing crop buffers looked 0.6 FPS worse; interleaved with its control it was 0.7 FPS better. Steps run minutes apart drift.
+- **What helped (two people, `--pipeline`):** drawing frame N while frame N+1's models run (+2-3 FPS; drawing is ~8 ms the GPU used to wait for), shrinking the frame before converting it to RGB for the person detector (+1.4), reusing crop buffers (+0.7), one face-model run for all faces (+2.1). 27.6 -> 30.5 FPS; 24.8 without `--pipeline`.
+- **Give TensorRT a fixed batch range.** A model with a dynamic batch rebuilds its engine (~6 min on the Orin, app frozen) the first time a new batch size appears; set `trt_profile_min/opt/max_shapes`.
+- **A half-busy GPU and CPU means waiting, not too little power.** At 21 FPS the GPU was ~60% and the CPU ~50% busy at ~20 W of 35 W: each crop and model run waits for the previous one. On the Orin the CPU and GPU share memory, so copies are cheap; the waits at each download and model run are what cost.
+- **`jtop` reports the system OpenCV (4.8.0, no CUDA).** The app's venv loads the CUDA build (4.10.0) through `00-opencv-cuda.pth`; check with the venv's python, not jtop.
