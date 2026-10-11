@@ -83,3 +83,21 @@ def test_reader_drops_each_frame_from_the_file_cache(tmp_path, monkeypatch):
     r.read()
     r.read()
     assert calls == [(0, 144, os.POSIX_FADV_DONTNEED), (144, 144, os.POSIX_FADV_DONTNEED)]
+
+
+def test_frames_are_read_ahead_in_the_background(tmp_path):
+    # A camera hands over frames captured in the background; reading 6 MB per frame from disk inside read() made
+    # the replay's capture stage 11.6 ms on the Orin against ~3 ms live.
+    import time
+    path = tmp_path / 'clip'
+    with RawVideoWriter(path, 8, 6) as w:
+        for f in _frames(6):
+            w.write(f)
+    r = RawVideoReader(path, ahead=3)
+    deadline = time.monotonic() + 2
+    while r.buffered() < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert r.buffered() == 3
+    assert [int(r.read()[0, 0, 0]) for _ in range(6)] == list(range(6))
+    with pytest.raises(EOFError):
+        r.read()

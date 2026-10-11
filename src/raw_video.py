@@ -4,12 +4,15 @@ A clip is `<path>.bgr` (frames back to back, uint8 HxWx3) plus `<path>.json` (wi
 are read from disk one at a time, so a long 1080p clip doesn't have to fit in memory, and reading one costs
 about what a camera read does (no video decoding on the Orin's CPU). Each frame is dropped from the file cache
 after it is read: on the Orin the CPU and GPU share memory, and 11 GB of cached clip made the next run's GPU
-allocation fail (NvMap error 12).
+allocation fail (NvMap error 12). Frames are read a few ahead in a background thread, as a camera captures
+in the background: reading 6 MB inside read() made the replay's capture stage 11.6 ms against ~3 ms live.
 """
 from __future__ import annotations
 
 import json
 import os
+import queue
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -42,21 +45,32 @@ class RawVideoWriter:
 
 
 class RawVideoReader:
-    def __init__(self, path) -> None:
+    def __init__(self, path, ahead: int = 4) -> None:
         path = Path(path)
         meta = json.loads(path.with_suffix('.json').read_text())
         self.width, self.height, self.count = meta['width'], meta['height'], meta['count']
         self.fps = meta.get('fps', 0.0)
         self._size = self.width * self.height * 3
         self._fd = os.open(path.with_suffix('.bgr'), os.O_RDONLY)
-        self._next = 0
+        self._frames: queue.Queue = queue.Queue(maxsize=ahead)
+        threading.Thread(target=self._read_ahead, name='clip-reader', daemon=True).start()
+
+    def _read_ahead(self) -> None:
+        for i in range(self.count):
+            offset = i * self._size
+            data = os.pread(self._fd, self._size, offset)
+            os.posix_fadvise(self._fd, offset, self._size, os.POSIX_FADV_DONTNEED)
+            self._frames.put(np.frombuffer(data, np.uint8).reshape(self.height, self.width, 3))
+        self._frames.put(None)
+
+    def buffered(self) -> int:
+        """Frames read ahead and waiting."""
+        return self._frames.qsize()
 
     def read(self) -> np.ndarray:
         """The next frame; EOFError after the last one."""
-        if self._next >= self.count:
+        frame = self._frames.get()
+        if frame is None:
+            self._frames.put(None)  # stay at the end
             raise EOFError('end of video')
-        offset = self._next * self._size
-        data = os.pread(self._fd, self._size, offset)
-        os.posix_fadvise(self._fd, offset, self._size, os.POSIX_FADV_DONTNEED)
-        self._next += 1
-        return np.frombuffer(data, np.uint8).reshape(self.height, self.width, 3).copy()
+        return frame
