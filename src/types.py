@@ -53,6 +53,7 @@ class FaceResult:
     person_id: int = 0
     presence: float = 1.0
     pts: Optional[np.ndarray] = None  # [N, 2] landmark x, y as an array, for smoothing
+    fade: float = 1.0  # brightness; < 1 for a ghost of a missing part (issue #13)
 
 @dataclass
 class HandResult:
@@ -74,6 +75,7 @@ class HandResult:
     presence: float = 0.0
     roi: Optional[tuple] = None
     pts: Optional[np.ndarray] = None  # [N, 2] landmark x, y as an array, for smoothing
+    fade: float = 1.0  # brightness; < 1 for a ghost of a missing part (issue #13)
 
 @dataclass
 class BodyResult:
@@ -90,3 +92,4 @@ class BodyResult:
     person_id: int = 0
     roi: Optional[tuple] = None
     pts: Optional[np.ndarray] = None  # [N, 2] landmark x, y as an array, for smoothing
+    fade: float = 1.0  # brightness; < 1 for a ghost of a missing part (issue #13)

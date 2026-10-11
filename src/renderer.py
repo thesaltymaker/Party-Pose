@@ -39,12 +39,12 @@ class Renderer:
                    frame_w: int, frame_h: int, cs_x: float = 1.0, cs_y: float = 1.0) -> None:
         for result in results:
             if self.skelly:
-                _fill_skelly_face(cpu_frame, result.landmarks, cs_x, cs_y)
+                _fill_skelly_face(cpu_frame, result.landmarks, cs_x, cs_y, result.fade)
             if self.santa_hat:
-                _draw_santa_hat(cpu_frame, result.landmarks, cs_x, cs_y, result.person_id)
+                _draw_santa_hat(cpu_frame, result.landmarks, cs_x, cs_y, result.person_id, result.fade)
             if self.skelly:
                 continue
-            color = PERSON_COLORS[result.person_id % len(PERSON_COLORS)]
+            color = _faded(PERSON_COLORS[result.person_id % len(PERSON_COLORS)], result.fade)
             for lm in result.landmarks:
                 x, y = int(lm.x * cs_x), int(lm.y * cs_y)
                 if not (-0.05 * frame_w <= x <= 1.05 * frame_w and -0.05 * frame_h <= y <= 1.05 * frame_h):
@@ -68,7 +68,7 @@ class Renderer:
     def draw_hands(self, cpu_frame: np.ndarray, results: List[HandResult],
                    frame_w: int, frame_h: int, cs_x: float = 1.0, cs_y: float = 1.0) -> None:
         for result in results:
-            color = PERSON_COLORS[result.person_id % len(PERSON_COLORS)]
+            color = _faded(PERSON_COLORS[result.person_id % len(PERSON_COLORS)], result.fade)
             for lm in result.landmarks:
                 x, y = int(lm.x * cs_x), int(lm.y * cs_y)
                 if not (-0.05 * frame_w <= x <= 1.05 * frame_w and -0.05 * frame_h <= y <= 1.05 * frame_h):
@@ -92,7 +92,7 @@ class Renderer:
     def draw_body(self, cpu_frame: np.ndarray, results: List[BodyResult],
                   frame_w: int, frame_h: int, cs_x: float = 1.0, cs_y: float = 1.0) -> None:
         for result in results:
-            color = PERSON_COLORS[result.person_id % len(PERSON_COLORS)]
+            color = _faded(PERSON_COLORS[result.person_id % len(PERSON_COLORS)], result.fade)
             dim_color = tuple(int(c * 0.3) for c in color)
             for i, lm in enumerate(result.landmarks[:33]):
                 if i in _BODY_SKIP_LM:
@@ -138,11 +138,16 @@ class Renderer:
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, COLOR_FPS, 2)
 
 
+def _faded(color, fade: float) -> tuple:
+    """The colour scaled toward black: a ghost on the black background dims (issue #13)."""
+    return color if fade >= 1.0 else tuple(int(c * fade) for c in color)
+
+
 def _points(landmarks, indices, cs_x: float, cs_y: float) -> np.ndarray:
     return np.array([(landmarks[i].x * cs_x, landmarks[i].y * cs_y) for i in indices], dtype=np.int32)
 
 
-def _fill_skelly_face(cpu_frame: np.ndarray, landmarks, cs_x: float, cs_y: float) -> None:
+def _fill_skelly_face(cpu_frame: np.ndarray, landmarks, cs_x: float, cs_y: float, fade: float = 1.0) -> None:
     """--skelly: fill the face outline in bone white, leaving eyes, nose and mouth showing (Party-Pose.py SKELLY_MODE).
 
     The mask covers only the face's bounding box, not the whole frame, so it stays cheap at full-screen size.
@@ -159,10 +164,11 @@ def _fill_skelly_face(cpu_frame: np.ndarray, landmarks, cs_x: float, cs_y: float
     offset = np.array([x0, y0], np.int32)
     cv2.fillPoly(mask, [outline - offset], 255)
     cv2.fillPoly(mask, [_points(landmarks, c, cs_x, cs_y) - offset for c in SKELLY_CUTOUTS], 0)
-    cpu_frame[y0:y1, x0:x1][mask > 0] = COLOR_SKELLY
+    cpu_frame[y0:y1, x0:x1][mask > 0] = _faded(COLOR_SKELLY, fade)
 
 
-def _draw_santa_hat(canvas: np.ndarray, landmarks, cs_x: float, cs_y: float, person_id: int) -> None:
+def _draw_santa_hat(canvas: np.ndarray, landmarks, cs_x: float, cs_y: float, person_id: int,
+                    fade: float = 1.0) -> None:
     """--santa-hat: a floppy Santa hat on the temples (landmarks 103 and 332), ported from Party-Pose.py.
 
     The tip flops right for even person ids and left for odd ones.
@@ -197,8 +203,9 @@ def _draw_santa_hat(canvas: np.ndarray, landmarks, cs_x: float, cs_y: float, per
                             (mid_x, mid_y + int(hat_thickness * 0.4)),
                             (peak_x + int(hat_thickness * 0.7), peak_y + int(hat_thickness * 0.5)),
                             base_right], dtype=np.int32)
-    cv2.fillPoly(canvas, [np.vstack([top_edge, bottom_edge])], SANTA_HAT_RED)
-    cv2.polylines(canvas, [top_edge, bottom_edge], False, (0, 0, 150), 2, cv2.LINE_AA)
+    red, white = _faded(SANTA_HAT_RED, fade), _faded(SANTA_HAT_WHITE, fade)
+    cv2.fillPoly(canvas, [np.vstack([top_edge, bottom_edge])], red)
+    cv2.polylines(canvas, [top_edge, bottom_edge], False, _faded((0, 0, 150), fade), 2, cv2.LINE_AA)
 
     # White fluffy brim
     puff_radius = int(brim_height * 0.8)
@@ -206,11 +213,11 @@ def _draw_santa_hat(canvas: np.ndarray, landmarks, cs_x: float, cs_y: float, per
         t = i / 12
         bx = int(base_left[0] * (1 - t) + base_right[0] * t)
         by = int(base_left[1] * (1 - t) + base_right[1] * t) + int(brim_height * 0.3 * np.sin(t * np.pi * 3))
-        cv2.circle(canvas, (bx, by), puff_radius, SANTA_HAT_WHITE, -1, cv2.LINE_AA)
+        cv2.circle(canvas, (bx, by), puff_radius, white, -1, cv2.LINE_AA)
 
     # White fluffy pompom
     for i in range(8):
         angle = i / 8 * 2 * np.pi
         cv2.circle(canvas, (tip_x + int(pompom_radius * 0.3 * np.cos(angle)), tip_y + int(pompom_radius * 0.3 * np.sin(angle))),
-                   int(pompom_radius * 0.8), SANTA_HAT_WHITE, -1, cv2.LINE_AA)
-    cv2.circle(canvas, (tip_x, tip_y), pompom_radius, SANTA_HAT_WHITE, -1, cv2.LINE_AA)
+                   int(pompom_radius * 0.8), white, -1, cv2.LINE_AA)
+    cv2.circle(canvas, (tip_x, tip_y), pompom_radius, white, -1, cv2.LINE_AA)

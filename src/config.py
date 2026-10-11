@@ -24,7 +24,7 @@ class Config:
     track_report: float = 0.0   # seconds between [TRACK] stat lines (0 = off)
     require_face: bool = False  # draw a person only once a real face has been seen in their track
     drop_still: bool = False    # don't draw tracks that haven't moved for ~10 s (props; issue #7)
-    face_hold: bool = False     # keep drawing the last good face for a few frames when the face model misses
+    ghost_frames: int = 5       # frames a missing body, face or hand is redrawn, dimming (issue #13; 0 = off)
     smooth: bool = True         # smooth landmarks across frames (--no-smooth for A/B tests)
     pipeline: bool = False      # run the next frame's models while this frame is drawn (one frame later on screen)
     video: Optional[str] = None  # read this raw clip (src/raw_video.py) instead of the camera, as fast as possible
@@ -71,9 +71,9 @@ def parse_args() -> Config:
     parser.add_argument("--drop-still", action="store_true",
                         help="Don't draw a person whose box hasn't moved for ~10 s (lamps, chairs; also people "
                              "sitting very still)")
-    parser.add_argument("--face-hold", action="store_true",
-                        help="When the face model misses a frame, keep drawing the person's last face "
-                             "(moved with their head) for up to ~0.3 s")
+    parser.add_argument("--ghost-frames", type=int, default=5, metavar="N",
+                        help="When a tracked person's body, face or hand is missing, redraw its last result "
+                             "for N-1 frames, dimming, then drop it (default 5 = 1/6 s at 30 FPS; 0 = off)")
     parser.add_argument("--video", default=None, metavar="CLIP",
                         help="Read a clip recorded with tools/orin_bench/record_video.py instead of the camera, "
                              "as fast as possible, and exit at its end (repeatable benchmarks)")
@@ -121,7 +121,7 @@ def parse_args() -> Config:
         track_report=args.track_report,
         require_face=args.require_face,
         drop_still=args.drop_still,
-        face_hold=args.face_hold,
+        ghost_frames=args.ghost_frames,
         smooth=args.smooth,
         pipeline=args.pipeline,
         video=args.video,

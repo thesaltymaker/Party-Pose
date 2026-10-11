@@ -1,5 +1,6 @@
 import sys
 import json
+import dataclasses
 import math
 import queue
 import signal
@@ -22,6 +23,7 @@ from src.tracker import PersonTracker
 from src.smoothing import PoseSmoother
 from src.track_stats import TrackStats
 from src.flicker import FlickerCounter
+from src.ghosts import Ghosts
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult, Landmark
 
 
@@ -58,7 +60,7 @@ def _assign_heads(bodies: List[BoundingBox], heads: List[BoundingBox]) -> List[O
 
 
 def _moved_face(face: FaceResult, old_head: BoundingBox, new_head: BoundingBox) -> FaceResult:
-    """The face found in old_head, moved and scaled to where the same head is now (--face-hold)."""
+    """The face found in old_head, moved and scaled to where the same head is now (a ghost face, issue #13)."""
     ocx, ocy = old_head.x + old_head.w / 2, old_head.y + old_head.h / 2
     ncx, ncy = new_head.x + new_head.w / 2, new_head.y + new_head.h / 2
     s = new_head.w / old_head.w if old_head.w > 0 else 1.0
@@ -66,14 +68,6 @@ def _moved_face(face: FaceResult, old_head: BoundingBox, new_head: BoundingBox) 
                  for lm in face.landmarks]
     return FaceResult(bbox=new_head, landmarks=landmarks, blendshapes=face.blendshapes,
                       person_id=face.person_id, presence=face.presence)
-
-
-def _held_face(held_faces, person_id: int, head: BoundingBox, frame_no: int) -> Optional[FaceResult]:
-    """--face-hold: this person's last good face, moved to their head now, if it was seen within FACE_HOLD_FRAMES."""
-    entry = held_faces.get(person_id)
-    if entry is None or frame_no - entry[2] > FACE_HOLD_FRAMES:
-        return None
-    return _moved_face(entry[0], entry[1], head)
 
 
 def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies, cs_x: float, cs_y: float,
@@ -179,10 +173,6 @@ def _screen_canvas(screen_w: int, screen_h: int, w: int, h: int) -> tuple:
 # replay, was never reached live. The [STAGES] log prints the live face logits (face_logit=) to set it from.
 FACE_VERIFY_PRESENCE = 0.95
 FACE_VERIFY_HITS = 2
-
-# --face-hold: frames a person's last good face is still drawn after the face model stops finding it. While
-# dancing (Orin, 13-16 ft, facing the camera) the model kept about 1 head in 3; turns, tilts and blur fail.
-FACE_HOLD_FRAMES = 10  # ~0.33 s at 30 FPS
 
 WINDOW_NAME = 'Poser'
 QUIT_KEYS = (ord('q'), 27)  # q or Escape
@@ -314,9 +304,9 @@ def main():
     # Accumulated ms per stage (capture, person, face, hands, body, smooth, render); printed as 60-frame averages with --fps.
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'smooth', 'render')}
-    counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'faces_held',
+    counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'ghosts',
                              'hands_found')}
-    held_faces = {}  # track id -> (last good FaceResult, its head box, frame number), for --face-hold
+    ghosts = Ghosts(config.ghost_frames)  # last results of each person's parts, redrawn dimming when missing
     flicker = FlickerCounter()  # [FLICKER] blink counts per part, printed at the end of a --video run
     frame_no = 0
     face_logits: List[float] = []  # face model logits of drawn faces, for tuning FACE_VERIFY_PRESENCE
@@ -336,7 +326,7 @@ def main():
 
     def infer():
         """Capture a frame and run the models, tracking and smoothing on it."""
-        nonlocal frame_no, body_rois, hand_rois, held_faces, last_report
+        nonlocal frame_no, body_rois, hand_rois, last_report
         frame_no += 1
         t = time.perf_counter()
         frame_gpu = capture.read_frame()
@@ -350,7 +340,8 @@ def main():
         detections = None
         track_ids: List[int] = []
         id_labels = []  # (track id, body box) for --show-ids
-        drawn = set()  # (track id, part) drawn this frame, for [FLICKER]
+        seen = {}  # (track id, part) -> this frame's result (a face with its head box), for ghosts
+        heads_now = {}  # track id -> head box this frame, to move a ghost face with its head
 
         if person_proc:
             t = time.perf_counter()
@@ -372,7 +363,6 @@ def main():
             for line in tracker.events:
                 print(line, flush=True)
             tracker.events.clear()
-            held_faces = {k: v for k, v in held_faces.items() if frame_no - v[2] <= FACE_HOLD_FRAMES}
             # --drop-still (issue #7): a track that hasn't moved for ~10 s is a prop (or someone very
             # still); it gets no head, hands, or face and body models.
             confirmed = [(tr, box) for tr, box in zip(tracks, detections.body_boxes) if tr.confirmed]
@@ -396,23 +386,19 @@ def main():
                 person_id = track.id
                 still = track.is_still()
                 face = face_logit = body = None
+                if head_bbox is not None:
+                    heads_now[person_id] = head_bbox
 
                 if k in faces_by_person:
                     face, face_logit = faces_by_person[k]  # logit also for rejected faces, in [TRACK] lines
                     if face is not None:
                         face.person_id = person_id
                         all_face_results.append(face)
+                        seen[(person_id, 'face')] = (face, head_bbox)
                         face_logit = math.log(face.presence / max(1e-12, 1 - face.presence))
                         face_logits.append(face_logit)
                         if face.presence >= FACE_VERIFY_PRESENCE:
                             track.face_hits += 1
-
-                if config.face_hold and head_bbox is not None:
-                    if face is not None:
-                        held_faces[person_id] = (face, head_bbox, frame_no)
-                    elif (held := _held_face(held_faces, person_id, head_bbox, frame_no)) is not None:
-                        all_face_results.append(held)
-                        counts['faces_held'] += 1
 
                 # A body is only drawn once the face model has clearly seen a real face in its own head box
                 # in a few frames. The lamp and other static false positives never show one (issue #3).
@@ -433,6 +419,7 @@ def main():
                     if body is not None:
                         body.person_id = person_id
                         all_body_results.append(body)
+                        seen[(person_id, 'body')] = body
 
                 # Hands are cropped from the pose's wrists (or the hand's last landmarks), so they need the body.
                 if hand_proc and body is not None:
@@ -443,7 +430,7 @@ def main():
                         if hand is not None:
                             hand.person_id = person_id
                             all_hand_results.append(hand)
-                            drawn.add((person_id, f'hand{side}'))
+                            seen[(person_id, f'hand{side}')] = hand
                     stage_ms['hands'] += (time.perf_counter() - t) * 1000
                     counts['hands_found'] += sum(h is not None for h in hands)
 
@@ -456,14 +443,27 @@ def main():
                 for line in track_stats.report({t.id for t in tracker.tracks + tracker.lost}):
                     print(line, flush=True)
 
-        drawn.update((f.person_id, 'face') for f in all_face_results)
-        drawn.update((b.person_id, 'body') for b in all_body_results)
-        flicker.update(drawn)
-
         if smoother:
             t = time.perf_counter()
             smoother.smooth(all_face_results, all_hand_results, all_body_results, t_frame)
             stage_ms['smooth'] += (time.perf_counter() - t) * 1000
+
+        # Ghosts (issue #13): a tracked person's part missing this frame is drawn again from its last smoothed
+        # result, dimming, in the track's colour. Copies with their own brightness, so the result being drawn
+        # by the other thread (--pipeline) is never changed.
+        ghosted = ghosts.update(seen)
+        for (person_id, part), item, fade in ghosted:
+            if part == 'face':
+                face, old_head = item
+                if person_id in heads_now:
+                    face = _moved_face(face, old_head, heads_now[person_id])
+                all_face_results.append(dataclasses.replace(face, fade=fade))
+            elif part == 'body':
+                all_body_results.append(dataclasses.replace(item, fade=fade))
+            else:
+                all_hand_results.append(dataclasses.replace(item, fade=fade))
+        counts['ghosts'] += len(ghosted)
+        flicker.update(list(seen) + [key for key, _, _ in ghosted])
 
         if black_frame is not None:
             frame_gpu = None            # not drawn
