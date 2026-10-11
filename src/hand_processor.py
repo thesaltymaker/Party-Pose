@@ -23,12 +23,14 @@ def _rect(cx: float, cy: float, w: float, h: float, angle: float, scale: float, 
 
 
 def hand_roi_from_pose(pose: Sequence[Landmark], side: int) -> Roi:
-    """MediaPipe Holistic's hand crop from the pose model's wrist, pinky and index points."""
+    """MediaPipe Holistic's hand crop from the pose model's wrist, pinky and index points, at 2.0x, not Holistic's
+    2.7x: Holistic then re-crops with a second model we don't have. At 2.7x the hand was too small in the crop and
+    the pose's left-hand points are less exact, so 67% of left hands were found (98% right); at 2.0x 91% / 96%."""
     w, p, i = (np.array([pose[k].x, pose[k].y]) for k in _POSE_HAND[side])
     middle = (2 * i + p) / 3
     size = 2 * float(np.hypot(*(middle - w)))
     angle = Preprocessor.roi_from_alignment(w, middle)[3]
-    return _rect(middle[0], middle[1], size, size, angle, 2.7, -0.1)
+    return _rect(middle[0], middle[1], size, size, angle, 2.0, -0.1)
 
 
 def hand_roi_from_landmarks(pts: np.ndarray) -> Roi:

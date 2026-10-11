@@ -20,7 +20,7 @@ def test_hand_roi_from_pose_points_up_from_the_wrist():
     cx, cy, size, angle = hand_roi_from_pose(_pose(), 0)
     assert angle == pytest.approx(0.0)
     assert (cx, cy) == pytest.approx((100, 80))       # shifted 0.1 x 200 towards the fingers
-    assert size == pytest.approx(200 * 2.7)
+    assert size == pytest.approx(200 * 2.0)  # 2.7 (Holistic, which then re-crops) left the hand too small
 
 
 def test_hand_roi_from_landmarks_is_square_around_the_palm():
