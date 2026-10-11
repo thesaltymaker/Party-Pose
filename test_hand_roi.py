@@ -78,11 +78,21 @@ def test_previous_hand_roi_is_used_first(crops):
     assert crops[0] == (300, 300)
 
 
-def test_lost_previous_hand_falls_back_to_the_pose(crops):
-    proc = HandProcessor(_Models(_Session([0.1])))  # previous ROI: no hand there any more
+def test_lost_previous_hand_is_cropped_from_the_pose_on_the_next_frame(crops):
+    # One hand-model run per hand per frame: a miss at the previous ROI is not retried in the same frame.
+    session = _Session([0.1])
+    proc = HandProcessor(_Models(session))
     left, _ = proc.process(None, _pose(), [(300, 300, 100, 0.0), None])
-    assert crops[:2] == [(300, 300), (100, 80)]
+    assert left is None and session.runs == 1
+    left, _ = proc.process(None, _pose(), [None, None])
+    assert crops == [(300, 300), (100, 80)]
     assert left is not None and left.roi is not None
+
+
+def test_hand_points_match_its_landmarks(crops):
+    left, _ = HandProcessor(_Models(_Session([]))).process(None, _pose(), [None, None])
+    assert left.pts.shape == (21, 2)
+    assert left.pts[0].tolist() == pytest.approx([left.landmarks[0].x, left.landmarks[0].y])
 
 
 def test_hidden_wrist_without_a_previous_hand_is_skipped(crops):

@@ -55,7 +55,8 @@ class BodyProcessor:
         landmarks = Preprocessor.to_image_space_affine(lms, M)
         next_roi = Preprocessor.roi_from_alignment((landmarks[33].x, landmarks[33].y),
                                                    (landmarks[34].x, landmarks[34].y))
-        return BodyResult(landmarks=landmarks, presence=presence, roi=next_roi)
+        return BodyResult(landmarks=landmarks, presence=presence, roi=next_roi,
+                          pts=lms[:, :2] @ M[:, :2].T + M[:, 2])
 
     def _run(self, arr: np.ndarray) -> Tuple[np.ndarray, float]:
         session = self.model_manager.get_session('pose_landmarks')

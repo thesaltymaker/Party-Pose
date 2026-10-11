@@ -56,3 +56,12 @@ def test_hands_keep_their_filter_when_handedness_flips():
         # Each hand stays near its own place; a mixed-up filter would pull it toward the other hand.
         assert abs(left.landmarks[0].x - 100) < 5
         assert abs(right.landmarks[0].x - 600) < 5
+
+
+def test_smoothing_starts_from_the_processor_points_when_given():
+    # Processors pass their [N, 2] point array, so smoothing doesn't rebuild it from Landmark objects.
+    from src.types import BodyResult
+    body = BodyResult(landmarks=[Landmark(0.0, 0.0, 7.0) for _ in range(3)], person_id=1)
+    body.pts = np.array([[10.0, 20.0], [30.0, 40.0], [50.0, 60.0]])
+    PoseSmoother().smooth([], [], [body], 0.0)
+    assert [(lm.x, lm.y, lm.z) for lm in body.landmarks] == [(10, 20, 7), (30, 40, 7), (50, 60, 7)]

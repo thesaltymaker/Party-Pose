@@ -47,7 +47,8 @@ class HandProcessor:
     """Runs the hand landmark model on each of a person's two hands.
 
     Crops follow MediaPipe Holistic: from the hand's own landmarks in the previous frame, else from the pose model's
-    wrist, pinky and index points. The detector's hand boxes found 40% of hands on the laptop (0% when the person
+    wrist, pinky and index points. One model run per hand per frame (Orin FPS): a hand lost at its previous crop
+    is cropped from the pose on the next frame. The detector's hand boxes found 40% of hands on the laptop (0% when the person
     was shrunk to a third, as at the Orin's 13-16 ft); these crops found 92% (12% shrunk).
 
     The model's outputs are landmarks (Identity), presence (Identity_1) and handedness (Identity_2). Reading
@@ -65,14 +66,10 @@ class HandProcessor:
         """One HandResult or None per side. prev_rois: each side's HandResult.roi from the previous frame, or None."""
         out: List[Optional[HandResult]] = []
         for side in (0, 1):
-            pose_ok = pose[_POSE_HAND[side][0]].visibility >= self.WRIST_VISIBILITY
-            tries = [r for r in (prev_rois[side], hand_roi_from_pose(pose, side) if pose_ok else None) if r is not None]
-            result = None
-            for roi in tries:
-                result = self._run(frame_gpu, roi)
-                if result is not None:
-                    break
-            out.append(result)
+            roi = prev_rois[side]
+            if roi is None and pose[_POSE_HAND[side][0]].visibility >= self.WRIST_VISIBILITY:
+                roi = hand_roi_from_pose(pose, side)
+            out.append(self._run(frame_gpu, roi) if roi is not None else None)
         return out
 
     def _run(self, frame_gpu, roi: Roi) -> Optional[HandResult]:
@@ -85,7 +82,7 @@ class HandProcessor:
             return None
         lms = lms.reshape(21, 3)
         landmarks = Preprocessor.to_image_space_affine(np.c_[lms, np.ones((21, 2), np.float32)], M)
-        pts = np.array([(lm.x, lm.y) for lm in landmarks])
+        pts = lms[:, :2] @ M[:, :2].T + M[:, 2]
         lo, hi = pts.min(axis=0), pts.max(axis=0)
         return HandResult(
             bbox=BoundingBox(float(lo[0]), float(lo[1]), float(hi[0] - lo[0]), float(hi[1] - lo[1]), presence),
@@ -94,4 +91,5 @@ class HandProcessor:
             handedness_score=handedness,
             presence=presence,
             roi=hand_roi_from_landmarks(pts),
+            pts=pts,
         )

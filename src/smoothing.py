@@ -70,13 +70,17 @@ class Smoother:
         self.filters = {k: f for k, f in self.filters.items() if t - f.t <= self.max_gap}
 
 
-def _points(landmarks) -> np.ndarray:
-    return np.array([(lm.x, lm.y, lm.z) for lm in landmarks], dtype=np.float64)
+def _points(result) -> np.ndarray:
+    """[N, 2] x, y: the processor's array if it set one (building it from Landmark objects is most of the cost on
+    the Orin), else from the landmarks (held faces)."""
+    if result.pts is not None and len(result.pts) == len(result.landmarks):
+        return result.pts
+    return np.array([(lm.x, lm.y) for lm in result.landmarks], dtype=np.float64)
 
 
 def _write(landmarks, pts: np.ndarray) -> None:
-    for lm, (x, y, z) in zip(landmarks, pts.tolist()):
-        lm.x, lm.y, lm.z = x, y, z
+    for lm, (x, y) in zip(landmarks, pts.tolist()):
+        lm.x, lm.y = x, y
 
 
 def _extent(pts: np.ndarray) -> float:
@@ -96,24 +100,24 @@ class PoseSmoother:
         """Replaces the landmark positions in place with smoothed ones. Call once per frame."""
         for kind, results in (('face', faces), ('body', bodies)):
             for r in results:
-                self._smooth_landmarks((kind, r.person_id), r.landmarks, t)
+                self._smooth_landmarks((kind, r.person_id), r, t)
         used = set()
         for hand in hands:
             key = self._hand_key(hand, t, used)
             used.add(key)
-            self._smooth_landmarks(key, hand.landmarks, t)
+            self._smooth_landmarks(key, hand, t)
         self.smoother.prune(t)
 
-    def _smooth_landmarks(self, key: Hashable, landmarks, t: float) -> None:
-        if not landmarks:
+    def _smooth_landmarks(self, key: Hashable, result, t: float) -> None:
+        if not result.landmarks:
             return
-        pts = _points(landmarks)
-        _write(landmarks, self.smoother(key, pts, t, _extent(pts)))
+        pts = _points(result)
+        _write(result.landmarks, self.smoother(key, pts, t, _extent(pts)))
 
     def _hand_key(self, hand: HandResult, t: float, used: set) -> Hashable:
         """The key of this person's nearest hand from earlier frames (wrist within one hand size), else a new one."""
-        pts = _points(hand.landmarks)
-        wrist, size = pts[0, :2], max(_extent(pts), 1.0)
+        pts = _points(hand)
+        wrist, size = pts[0], max(_extent(pts), 1.0)
         best, best_d = None, size
         for key, f in self.smoother.filters.items():
             if key[0] != 'hand' or key[1] != hand.person_id or key in used or t - f.t > self.smoother.max_gap:

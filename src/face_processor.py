@@ -56,7 +56,10 @@ class FaceProcessor:
         if self.enable_blendshapes and landmarks_raw.size > 0:
             blendshapes = self._run_blendshapes(landmarks_raw[0])
 
-        return FaceResult(bbox=head_bbox, landmarks=landmarks, blendshapes=blendshapes, presence=presence)
+        raw = landmarks_raw[0]
+        pts = np.c_[crop_bbox.x + raw[:, 0] / self.LANDMARK_W * crop_bbox.w,
+                    crop_bbox.y + raw[:, 1] / self.LANDMARK_H * crop_bbox.h]
+        return FaceResult(bbox=head_bbox, landmarks=landmarks, blendshapes=blendshapes, presence=presence, pts=pts)
 
     def _run_blendshapes(self, landmarks_raw: np.ndarray) -> Optional[np.ndarray]:
         if not CANONICAL_BLENDSHAPE_INDICES:

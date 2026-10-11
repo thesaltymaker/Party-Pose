@@ -93,3 +93,10 @@ def test_previous_roi_far_from_the_box_is_not_used(body):
     proc, calls = body
     proc.process(None, BoundingBox(100, 100, 200, 400, 0.9), 640, 480, False, roi=(2000, 300, 500, 0.0))
     assert calls == ['box', 'roi']
+
+
+def test_body_points_match_its_landmarks(body):
+    proc, _ = body
+    r = proc.process(None, BoundingBox(100, 100, 200, 400, 0.9), 640, 480, False)
+    assert r.pts.shape == (39, 2)
+    assert r.pts[34].tolist() == pytest.approx([r.landmarks[34].x, r.landmarks[34].y])

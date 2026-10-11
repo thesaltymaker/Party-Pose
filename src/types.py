@@ -52,6 +52,7 @@ class FaceResult:
     blendshapes: Optional[np.ndarray] = None
     person_id: int = 0
     presence: float = 1.0
+    pts: Optional[np.ndarray] = None  # [N, 2] landmark x, y as an array, for smoothing
 
 @dataclass
 class HandResult:
@@ -72,6 +73,7 @@ class HandResult:
     person_id: int = 0
     presence: float = 0.0
     roi: Optional[tuple] = None
+    pts: Optional[np.ndarray] = None  # [N, 2] landmark x, y as an array, for smoothing
 
 @dataclass
 class BodyResult:
@@ -87,3 +89,4 @@ class BodyResult:
     presence: float = 0.0
     person_id: int = 0
     roi: Optional[tuple] = None
+    pts: Optional[np.ndarray] = None  # [N, 2] landmark x, y as an array, for smoothing
