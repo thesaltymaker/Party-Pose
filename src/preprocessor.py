@@ -75,13 +75,7 @@ class Preprocessor:
 
         Always normalizes to [0, 1] — all landmark models (MediaPipe) expect this range.
         """
-        pad_x = bbox.w * pad_fraction
-        pad_y = bbox.h * pad_fraction
-        crop_x = max(0, bbox.x - pad_x)
-        crop_y = max(0, bbox.y - pad_y)
-        crop_w = min(frame_w - crop_x, bbox.w + 2 * pad_x)
-        crop_h = min(frame_h - crop_y, bbox.h + 2 * pad_y)
-
+        crop_x, crop_y, crop_w, crop_h = Preprocessor.crop_rect(bbox, pad_fraction, frame_w, frame_h)
         roi_gpu = cv2.cuda_GpuMat(frame_gpu, (int(crop_x), int(crop_y), int(crop_w), int(crop_h)))
         rgb_gpu = cv2.cuda.cvtColor(roi_gpu, cv2.COLOR_BGR2RGB)
 
@@ -118,6 +112,16 @@ class Preprocessor:
                 x=crop_x, y=crop_y, w=crop_w, h=crop_h, confidence=bbox.confidence
             )
             return arr, actual_bbox
+
+    @staticmethod
+    def crop_rect(bbox: BoundingBox, pad_fraction: float, frame_w: int, frame_h: int) -> Tuple[float, float, float, float]:
+        """crop_roi_nhwc's crop: the box grown by pad_fraction on each side, cut off at the frame. (x, y, w, h);
+        the pixels used are the int() of these."""
+        pad_x = bbox.w * pad_fraction
+        pad_y = bbox.h * pad_fraction
+        crop_x = max(0, bbox.x - pad_x)
+        crop_y = max(0, bbox.y - pad_y)
+        return crop_x, crop_y, min(frame_w - crop_x, bbox.w + 2 * pad_x), min(frame_h - crop_y, bbox.h + 2 * pad_y)
 
     @staticmethod
     def roi_from_alignment(centre, size_point, scale: float = 1.25) -> Tuple[float, float, float, float]:

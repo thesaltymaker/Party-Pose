@@ -34,6 +34,7 @@ class ModelManager:
         hand_landmarks: {'trt_cuda_graph_enable': True},
         pose_landmarks: {'trt_cuda_graph_enable': True},
         face_landmarks: {
+            'trt_cuda_graph_enable': True,  # through GpuFaceBatch, always at batch 2
             'trt_profile_min_shapes': 'input_12:1x256x256x3',
             'trt_profile_opt_shapes': 'input_12:2x256x256x3',
             'trt_profile_max_shapes': 'input_12:4x256x256x3',

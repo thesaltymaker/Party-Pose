@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from src.types import BoundingBox
+from src.gpu_model import GpuDetectorInput
 from src.preprocessor import Preprocessor
 from src.model_manager import ModelManager
 
@@ -37,11 +38,17 @@ class PersonDetector:
 
     def __init__(self, model_manager: ModelManager) -> None:
         self.model_manager = model_manager
+        self._gpu: Optional[GpuDetectorInput] = None  # created on first use (loads the session)
 
     def process(self, frame_gpu, frame_w: int, frame_h: int) -> PersonDetections:
-        arr = Preprocessor.full_frame_nhwc(frame_gpu, self.INPUT_W, self.INPUT_H, normalize=False)
         session = self.model_manager.get_session('person_detector')
-        raw = session.run(['batchno_classid_score_x1y1x2y2'], {'input': arr})[0]
+        if self._gpu is None:
+            self._gpu = GpuDetectorInput(session, 'input', 'batchno_classid_score_x1y1x2y2', self.INPUT_W, self.INPUT_H)
+        if self._gpu.on_gpu:
+            raw = self._gpu.run(frame_gpu, frame_w, frame_h)
+        else:
+            arr = Preprocessor.full_frame_nhwc(frame_gpu, self.INPUT_W, self.INPUT_H, normalize=False)
+            raw = session.run(['batchno_classid_score_x1y1x2y2'], {'input': arr})[0]
         # raw: [60, 7]  —  [batch_no, class_id, score, x1, y1, x2, y2]
 
         scale, pad_x, pad_y = Preprocessor.letterbox_params(frame_w, frame_h, self.INPUT_W, self.INPUT_H)

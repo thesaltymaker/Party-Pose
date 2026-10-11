@@ -8,6 +8,9 @@ from src.types import BoundingBox
 
 class _Session:
     """Face model stand-in: logit +5 for even crop ids, -5 for odd ones (id = the crop's fill value)."""
+    def get_providers(self):
+        return ['CPUExecutionProvider']  # GpuFaceBatch falls back to the numpy path
+
     def __init__(self):
         self.batches = []
 

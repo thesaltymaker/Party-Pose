@@ -26,6 +26,14 @@ import onnxruntime as ort
 from src.preprocessor import Preprocessor
 
 
+def gpu_face_batch(model_manager) -> 'GpuFaceBatch':
+    """The one GpuFaceBatch (created on first use)."""
+    models = model_manager.__dict__.setdefault('_gpu_models', {})
+    if 'face_landmarks' not in models:
+        models['face_landmarks'] = GpuFaceBatch(model_manager)
+    return models['face_landmarks']
+
+
 def gpu_model(model_manager, model: str, input_name: str, outputs: List[str], size: int) -> 'GpuModel':
     """The one GpuModel for this model (created on first use)."""
     models = model_manager.__dict__.setdefault('_gpu_models', {})
@@ -89,3 +97,93 @@ class GpuModel:
         self._opencv_stream.waitForCompletion()
         self.session.run_with_iobinding(self._binding)
         return [v.numpy() for v in self._out]
+
+
+class GpuFaceBatch:
+    """The face model on up to SLOTS head crops per run, cut, resized, RGB- and float-converted on the GPU into one
+    bound batch buffer (the same pixels as Preprocessor.crop_roi_nhwc with pad_fraction=0).
+
+    It always runs at batch SLOTS, so the Orin's TensorRT session replays one CUDA graph: a second graph for
+    another batch size in the same session gave wrong outputs (off by 215 model pixels, no error). With one face
+    the second slot keeps its last crop and its output is ignored; more faces run SLOTS at a time.
+    Orin, two faces: 6.40 ms -> 2.87 ms, same outputs.
+    """
+
+    SLOTS = 2
+    SIZE = 256
+
+    def __init__(self, model_manager) -> None:
+        self.session = model_manager.get_session('face_landmarks')
+        self.on_gpu = any(p in self.session.get_providers()
+                          for p in ('TensorrtExecutionProvider', 'CUDAExecutionProvider'))
+        if not self.on_gpu:
+            return
+        n, size = self.SLOTS, self.SIZE
+        self._stream = cv2.cuda.Stream.Null()
+        self._small = [cv2.cuda_GpuMat(size, size, cv2.CV_8UC3) for _ in range(n)]
+        self._rgb = [cv2.cuda_GpuMat(size, size, cv2.CV_8UC3) for _ in range(n)]
+        self._input = cv2.cuda.createContinuous(n * size, size, cv2.CV_32FC3, cv2.cuda_GpuMat())
+        self._binding = self.session.io_binding()
+        self._binding.bind_input('input_12', 'cuda', 0, np.float32, [n, size, size, 3], self._input.cudaPtr())
+        meta = {o.name: o.shape for o in self.session.get_outputs()}
+        self._out = []
+        for name in ('Identity', 'Identity_1'):
+            v = ort.OrtValue.ortvalue_from_shape_and_type([n] + [d if isinstance(d, int) else 1 for d in meta[name][1:]],
+                                                          np.float32, 'cuda', 0)
+            self._binding.bind_ortvalue_output(name, v)
+            self._out.append(v)
+
+    def run(self, frame_gpu: cv2.cuda_GpuMat, rects) -> tuple:
+        """rects: up to SLOTS (x, y, w, h) frame rectangles from Preprocessor.crop_rect. Returns
+        (landmarks [n, 478, 3] in model pixels, face logits [n])."""
+        size = self.SIZE
+        for k, (x, y, w, h) in enumerate(rects):
+            roi = cv2.cuda_GpuMat(frame_gpu, (int(x), int(y), int(w), int(h)))
+            # Use the returned GpuMats: on the Orin's OpenCV build dst is not always written in place.
+            self._small[k] = cv2.cuda.resize(roi, (size, size), self._small[k])
+            self._rgb[k] = cv2.cuda.cvtColor(self._small[k], cv2.COLOR_BGR2RGB, self._rgb[k])
+            slot = self._input.rowRange(k * size, (k + 1) * size)
+            if self._rgb[k].convertTo(cv2.CV_32FC3, slot, 1 / 255.0, 0.0).cudaPtr() != slot.cudaPtr():
+                raise RuntimeError('face crop was not written into the bound GPU batch buffer')
+        self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
+        self.session.run_with_iobinding(self._binding)
+        n = len(rects)
+        return self._out[0].numpy().reshape(self.SLOTS, 478, 3)[:n], self._out[1].numpy().reshape(-1)[:n]
+
+
+class GpuDetectorInput:
+    """The person detector's input prepared on the GPU (shrink, RGB, letterbox padding, float 0-255; the same
+    values as Preprocessor.full_frame_nhwc(normalize=False)) into a bound buffer. Its output has a different
+    number of rows every frame, so it goes to the CPU; part of the model runs outside TensorRT, so no CUDA graph.
+    Orin: 5.38 -> 4.36 ms, same output.
+    """
+
+    def __init__(self, session, input_name: str, output_name: str, width: int, height: int) -> None:
+        self.session, self.output_name, self.width, self.height = session, output_name, width, height
+        self.on_gpu = any(p in session.get_providers() for p in ('TensorrtExecutionProvider', 'CUDAExecutionProvider'))
+        if not self.on_gpu:
+            return
+        self._stream = cv2.cuda.Stream.Null()
+        self._small = self._rgb = self._padded = None
+        self._input = cv2.cuda.createContinuous(height, width, cv2.CV_32FC3, cv2.cuda_GpuMat())
+        self._binding = session.io_binding()
+        self._binding.bind_input(input_name, 'cuda', 0, np.float32, [1, height, width, 3], self._input.cudaPtr())
+        self._binding.bind_output(output_name, 'cpu')
+
+    def run(self, frame_gpu: cv2.cuda_GpuMat, frame_w: int, frame_h: int) -> np.ndarray:
+        scale, pad_x, pad_y = Preprocessor.letterbox_params(frame_w, frame_h, self.width, self.height)
+        new_w, new_h = int(round(frame_w * scale)), int(round(frame_h * scale))
+        if self._small is None or self._small.size() != (new_w, new_h):
+            self._small = cv2.cuda_GpuMat(new_h, new_w, cv2.CV_8UC3)
+            self._rgb = cv2.cuda_GpuMat(new_h, new_w, cv2.CV_8UC3)
+            self._padded = cv2.cuda_GpuMat(self.height, self.width, cv2.CV_8UC3)
+        # Use the returned GpuMats: on the Orin's OpenCV build dst is not always written in place.
+        self._small = cv2.cuda.resize(frame_gpu, (new_w, new_h), self._small)
+        self._rgb = cv2.cuda.cvtColor(self._small, cv2.COLOR_BGR2RGB, self._rgb)
+        self._padded = cv2.cuda.copyMakeBorder(self._rgb, pad_y, self.height - new_h - pad_y, pad_x,
+                                               self.width - new_w - pad_x, cv2.BORDER_CONSTANT, self._padded, (0, 0, 0))
+        if self._padded.convertTo(cv2.CV_32FC3, self._input, 1.0, 0.0).cudaPtr() != self._input.cudaPtr():
+            raise RuntimeError('detector input was not written into the bound GPU buffer')
+        self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
+        self.session.run_with_iobinding(self._binding)
+        return self._binding.copy_outputs_to_cpu()[0]

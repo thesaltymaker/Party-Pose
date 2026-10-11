@@ -3,6 +3,7 @@ import numpy as np
 from typing import List, Optional
 from src.types import BoundingBox, FaceResult
 from src.model_manager import ModelManager
+from src.gpu_model import gpu_face_batch
 from src.preprocessor import Preprocessor
 from src.topology import CANONICAL_BLENDSHAPE_INDICES
 
@@ -47,19 +48,32 @@ class FaceProcessor:
                      mirror: bool) -> List[Optional[FaceResult]]:
         """One FaceResult (or None when the face score is too low) per head box, in order. All heads go through
         the face model together, up to MAX_BATCH per run."""
-        crops = [Preprocessor.crop_roi_nhwc(frame_gpu, head, self.LANDMARK_W, self.LANDMARK_H,
-                                            pad_fraction=0.0, frame_w=frame_w, frame_h=frame_h)
-                 for head in head_bboxes]
-        session = self.model_manager.get_session('face_landmarks')
+        if not head_bboxes:
+            self.last_logits = []
+            return []
+        gpu = gpu_face_batch(self.model_manager)
         raws, logits = [], []
-        for i in range(0, len(crops), self.MAX_BATCH):
-            batch = np.concatenate([arr for arr, _ in crops[i:i + self.MAX_BATCH]])
-            landmarks_raw, presence_logit = session.run(['Identity', 'Identity_1'], {'input_12': batch})
-            raws.extend(landmarks_raw.reshape(-1, 478, 3))
-            logits.extend(float(v) for v in presence_logit.reshape(-1))
+        if gpu.on_gpu:
+            rects = [Preprocessor.crop_rect(head, 0.0, frame_w, frame_h) for head in head_bboxes]
+            crop_boxes = [BoundingBox(x, y, w, h, head.confidence) for (x, y, w, h), head in zip(rects, head_bboxes)]
+            for i in range(0, len(rects), gpu.SLOTS):
+                lms, lg = gpu.run(frame_gpu, rects[i:i + gpu.SLOTS])
+                raws.extend(lms)
+                logits.extend(float(v) for v in lg)
+        else:
+            crops = [Preprocessor.crop_roi_nhwc(frame_gpu, head, self.LANDMARK_W, self.LANDMARK_H,
+                                                pad_fraction=0.0, frame_w=frame_w, frame_h=frame_h)
+                     for head in head_bboxes]
+            crop_boxes = [box for _, box in crops]
+            session = self.model_manager.get_session('face_landmarks')
+            for i in range(0, len(crops), self.MAX_BATCH):
+                batch = np.concatenate([arr for arr, _ in crops[i:i + self.MAX_BATCH]])
+                landmarks_raw, presence_logit = session.run(['Identity', 'Identity_1'], {'input_12': batch})
+                raws.extend(landmarks_raw.reshape(-1, 478, 3))
+                logits.extend(float(v) for v in presence_logit.reshape(-1))
         self.last_logits = logits
         return [self._result(head, crop_bbox, raw, logit, frame_w, frame_h, mirror)
-                for head, (_, crop_bbox), raw, logit in zip(head_bboxes, crops, raws, logits)]
+                for head, crop_bbox, raw, logit in zip(head_bboxes, crop_boxes, raws, logits)]
 
     def _result(self, head_bbox: BoundingBox, crop_bbox: BoundingBox, raw: np.ndarray, logit: float,
                 frame_w: int, frame_h: int, mirror: bool) -> Optional[FaceResult]:
