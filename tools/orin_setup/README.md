@@ -24,7 +24,7 @@ It moves any existing `env/` aside (`env.old-<date>`), then builds a Python 3.10
 
 `orin-pip-freeze.txt` is the package list of the rebuilt environment.
 
-After a rebuild, the first run rebuilds the TensorRT engines in `models/trt_cache` (about 6 minutes for the person detector, several minutes more for the others). Run `sudo jetson_clocks` after every reboot.
+After a rebuild, the first run rebuilds the TensorRT engines in `models/trt_cache` (about 6 minutes for the person detector, several minutes more for the others). Run `sudo jetson_clocks` after every reboot, unless the app runs as the service below (it pins the clocks on every start).
 
 ## snapshot.sh: copies of everything not in git
 
@@ -46,4 +46,50 @@ rsync -a ~/.local/share/.quokka-larder/<date>/Party-Pose/env/ ~/Projects/Party-P
 
 ```sh
 git config core.hooksPath tools/git-hooks
+```
+
+## install_service.sh: run Party-Pose as a service (issue #8)
+
+```sh
+cd ~/Projects/Party-Pose && git pull && sh tools/orin_setup/install_service.sh
+```
+
+Needs your sudo password once. It installs `party-pose.service`, enables it at boot, adds a sudoers rule so `sudo systemctl start|stop|restart|status party-pose` needs no password, and creates `~/.config/party-pose/party-pose.env` (app arguments, display) if it doesn't exist. Options: `--no-enable`, `--no-sudoers`, `--uninstall`.
+
+What the service does on every start:
+
+1. As root (`service/prestart_root.sh`): checks the power mode is `MAXN_SUPER` (warns only, never changes it), then runs `jetson_clocks`. Both go to the journal.
+2. As you (`service/run.sh`): waits for the desktop session and reads its `DISPLAY`, `XAUTHORITY` and D-Bus address from the running `gnome-shell` process (the env file's values are only fallbacks), closes the GNOME Activities overview (issue #1), then runs `env/bin/python poser.py $POSER_ARGS` (`service/party-pose.env.example`: `--platform orin --fullscreen --fps --mirror --drop-still --face-hold --black-bg --skelly --pipeline`).
+
+The app needs a logged-in desktop. For it to come up at boot, turn on GDM auto-login (Settings > Users > Automatic Login). Without it the service waits until someone logs in.
+
+With `--fullscreen` the monitor's resolution is read from `xrandr` at every start, so any TV or monitor works. The frame is scaled on the GPU to fit it, keeping the aspect ratio, and centred on a black screen-sized image; the area the picture doesn't cover (e.g. top and bottom of a 16:9 picture on a 1920x1200 monitor) is black (issue #12). The Orin's OpenCV does not stretch images to fill a full-screen window. `--width/--height` override it. The log shows `[DISPLAY] screen ...`.
+
+| Action | Result |
+|---|---|
+| `sudo systemctl stop party-pose` or `pkill -TERM -f poser.py` | Window closes, camera released, no restart |
+| Esc or `q` on the Orin's keyboard | Same, no restart |
+| Crash, camera read error, or `kill -9` | Restarts after 5 s (gives up after 5 crashes in 10 min) |
+
+Logs: `journalctl -u party-pose -f`. Change app arguments in `~/.config/party-pose/party-pose.env`, then `sudo systemctl restart party-pose`.
+
+A stop during the first run after an env rebuild, while TensorRT engines build, can take up to 30 s and ends in SIGKILL; Python cannot handle the signal until the build call returns.
+
+### Testing checklist
+
+- Reboot with the service enabled: full screen, `[PROVIDERS]` shows TensorRT in `journalctl -u party-pose`, `cat /sys/class/devfreq/17000000.gpu/cur_freq` reads 1020000000, about 30 FPS with one person.
+- `sudo systemctl stop party-pose` over ssh: log ends with `[EXIT] SIGTERM received` and `[EXIT] camera released`; `sudo systemctl start party-pose` works straight after.
+- Esc on an attached keyboard: `[EXIT] quit key pressed`, and `systemctl status party-pose` shows inactive (not restarting).
+- `pkill -KILL -f poser.py`: `systemctl status party-pose` shows it restarting within about 5 s.
+
+### Diagnosing false positives without saving images
+
+`--show-ids` draws each person's track number (`#3`) on screen; `--track-report 10` prints one text line per track to the log every 10 seconds (box position and size, detector score, box and limb movement relative to box height, pose score, how often a head was matched, face scores). No images are saved.
+
+```sh
+# in ~/.config/party-pose/party-pose.env
+POSER_ARGS="--platform orin --fullscreen --fps --mirror --show-ids --track-report 10"
+sudo systemctl restart party-pose
+# after a minute or two, note which #ids on screen are people, then:
+journalctl -u party-pose --since "5 min ago" | grep -E '\[TRACK\]|\[FACES\]|\[STAGES' | tail -60
 ```

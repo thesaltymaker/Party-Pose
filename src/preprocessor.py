@@ -1,8 +1,14 @@
 from __future__ import annotations
+import math
+
 import cv2
 import numpy as np
 from typing import List, Tuple
 from src.types import BoundingBox, Landmark
+
+# crop_rotated_nhwc buffers per crop size: [warped GpuMat, RGB GpuMat, downloaded uint8, float32 output]
+_CROP_BUFS: dict = {}
+
 
 class Preprocessor:
     """Stateless preprocessor for GPU-resident pose detection pipeline."""
@@ -34,9 +40,9 @@ class Preprocessor:
         new_w = int(round(frame_w * scale))
         new_h = int(round(frame_h * scale))
 
-        rgb_gpu = cv2.cuda.cvtColor(frame_gpu, cv2.COLOR_BGR2RGB)
-        resized_gpu = cv2.cuda.resize(rgb_gpu, (new_w, new_h))
-        resized = resized_gpu.download()
+        # Resize first: converting the whole 1080p frame cost 1.3 ms on the Orin, the small image almost nothing.
+        resized_gpu = cv2.cuda.resize(frame_gpu, (new_w, new_h))
+        resized = cv2.cuda.cvtColor(resized_gpu, cv2.COLOR_BGR2RGB).download()
 
         padded = np.zeros((target_h, target_w, 3), dtype=np.uint8)
         padded[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
@@ -69,13 +75,7 @@ class Preprocessor:
 
         Always normalizes to [0, 1] — all landmark models (MediaPipe) expect this range.
         """
-        pad_x = bbox.w * pad_fraction
-        pad_y = bbox.h * pad_fraction
-        crop_x = max(0, bbox.x - pad_x)
-        crop_y = max(0, bbox.y - pad_y)
-        crop_w = min(frame_w - crop_x, bbox.w + 2 * pad_x)
-        crop_h = min(frame_h - crop_y, bbox.h + 2 * pad_y)
-
+        crop_x, crop_y, crop_w, crop_h = Preprocessor.crop_rect(bbox, pad_fraction, frame_w, frame_h)
         roi_gpu = cv2.cuda_GpuMat(frame_gpu, (int(crop_x), int(crop_y), int(crop_w), int(crop_h)))
         rgb_gpu = cv2.cuda.cvtColor(roi_gpu, cv2.COLOR_BGR2RGB)
 
@@ -112,6 +112,67 @@ class Preprocessor:
                 x=crop_x, y=crop_y, w=crop_w, h=crop_h, confidence=bbox.confidence
             )
             return arr, actual_bbox
+
+    @staticmethod
+    def crop_rect(bbox: BoundingBox, pad_fraction: float, frame_w: int, frame_h: int) -> Tuple[float, float, float, float]:
+        """crop_roi_nhwc's crop: the box grown by pad_fraction on each side, cut off at the frame. (x, y, w, h);
+        the pixels used are the int() of these."""
+        pad_x = bbox.w * pad_fraction
+        pad_y = bbox.h * pad_fraction
+        crop_x = max(0, bbox.x - pad_x)
+        crop_y = max(0, bbox.y - pad_y)
+        return crop_x, crop_y, min(frame_w - crop_x, bbox.w + 2 * pad_x), min(frame_h - crop_y, bbox.h + 2 * pad_y)
+
+    @staticmethod
+    def roi_from_alignment(centre, size_point, scale: float = 1.25) -> Tuple[float, float, float, float]:
+        """MediaPipe's pose ROI from the two alignment points (pose landmarks 33 and 34): a square centred on
+        the hips, 2 x their distance x `scale` wide, rotated so the hips-to-size-point line points up.
+        Returns (cx, cy, size, angle in radians)."""
+        (x0, y0), (x1, y1) = centre, size_point
+        angle = math.pi / 2 - math.atan2(-(y1 - y0), x1 - x0)
+        angle -= 2 * math.pi * math.floor((angle + math.pi) / (2 * math.pi))
+        return float(x0), float(y0), 2 * math.hypot(x1 - x0, y1 - y0) * scale, angle
+
+    @staticmethod
+    def roi_affine(cx: float, cy: float, size: float, angle: float, target: int) -> np.ndarray:
+        """2x3 matrix from model pixels (target x target) to frame pixels for a rotated square ROI."""
+        c, s, k = math.cos(angle), math.sin(angle), size / target
+        h = target / 2
+        return np.array([[c * k, -s * k, cx - (c - s) * h * k],
+                         [s * k, c * k, cy - (s + c) * h * k]])
+
+    @staticmethod
+    def crop_rotated_nhwc(frame_gpu: cv2.cuda_GpuMat, M: np.ndarray, target: int) -> np.ndarray:
+        """Crop the ROI given by `roi_affine` into a [1, target, target, 3] RGB float array in [0, 1].
+        Outside the frame is black, as in MediaPipe.
+
+        The GPU images, the downloaded image and the returned array are reused for every crop of this size
+        (allocating them per call was about half the crop time on the Orin), so the array is only valid until
+        the next crop of the same size; the models read it straight away. Call from one thread.
+        """
+        bufs = _CROP_BUFS.get(target)
+        if bufs is None:
+            bufs = _CROP_BUFS[target] = [cv2.cuda_GpuMat(target, target, cv2.CV_8UC3),
+                                         cv2.cuda_GpuMat(target, target, cv2.CV_8UC3),
+                                         np.empty((target, target, 3), np.uint8),
+                                         np.empty((1, target, target, 3), np.float32)]
+        warp, rgb, host, out = bufs
+        # Use the returned GpuMats: on the Orin's OpenCV build dst is not always written in place.
+        warp = bufs[0] = cv2.cuda.warpAffine(frame_gpu, cv2.invertAffineTransform(M), (target, target), warp,
+                                             flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        rgb = bufs[1] = cv2.cuda.cvtColor(warp, cv2.COLOR_BGR2RGB, rgb)
+        host = bufs[2] = rgb.download(host)
+        np.multiply(host, np.float32(1 / 255), out=out[0], casting='unsafe')
+        return out
+
+    @staticmethod
+    def to_image_space_affine(lms_model: np.ndarray, M: np.ndarray) -> List[Landmark]:
+        """Landmarks [N, 5] (x, y, z, visibility, presence in model pixels) to frame pixels through `roi_affine`."""
+        xy = lms_model[:, :2] @ M[:, :2].T + M[:, 2]
+        zs = lms_model[:, 2] * math.hypot(M[0, 0], M[1, 0])
+        return [Landmark(x=x, y=y, z=z, visibility=v, presence=p)
+                for (x, y), z, v, p in zip(xy.tolist(), zs.tolist(), lms_model[:, 3].tolist(),
+                                           lms_model[:, 4].tolist())]
 
     @staticmethod
     def to_image_space(

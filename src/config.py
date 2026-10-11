@@ -1,3 +1,4 @@
+from typing import Optional
 from dataclasses import dataclass, field
 import argparse
 import platform as platform_module
@@ -18,6 +19,17 @@ class Config:
     platform: str = "laptop"
     dump_detections: str = ""  # debug: directory for annotated frames + detection JSON ("" = off)
     dump_every: float = 2.0
+    fullscreen: bool = False
+    show_ids: bool = False      # draw '#<track id>' on each person
+    track_report: float = 0.0   # seconds between [TRACK] stat lines (0 = off)
+    require_face: bool = False  # draw a person only once a real face has been seen in their track
+    drop_still: bool = False    # don't draw tracks that haven't moved for ~10 s (props; issue #7)
+    face_hold: bool = False     # keep drawing the last good face for a few frames when the face model misses
+    smooth: bool = True         # smooth landmarks across frames (--no-smooth for A/B tests)
+    pipeline: bool = False      # run the next frame's models while this frame is drawn (one frame later on screen)
+    video: Optional[str] = None  # read this raw clip (src/raw_video.py) instead of the camera, as fast as possible
+    skelly: bool = False        # filled bone-coloured face with eyes, nose and mouth cut out
+    santa_hat: bool = False     # Santa hat on each face
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -49,7 +61,30 @@ def parse_args() -> Config:
     parser.add_argument("--black-bg", action="store_true", help="Black background — show only landmarks and skeleton")
     parser.add_argument("--dump-detections", default="", metavar="DIR", help="Save annotated frames + detection scores as JSON to DIR")
     parser.add_argument("--dump-every", type=float, default=2.0, help="Seconds between dumps (with --dump-detections)")
-    parser.set_defaults(face=True, body=True, hands=True)
+    parser.add_argument("--fullscreen", action="store_true", help="Show the output full screen (no title bar); Esc or q quits")
+    parser.add_argument("--show-ids", action="store_true", help="Draw each person's track number on screen")
+    parser.add_argument("--track-report", type=float, default=0.0, metavar="SECONDS",
+                        help="Print per-track statistics (text only) every SECONDS (0 = off)")
+    parser.add_argument("--require-face", action="store_true",
+                        help="Draw a tracked body only after a real face was seen in it (fewer false positives; "
+                             "people facing away are not drawn)")
+    parser.add_argument("--drop-still", action="store_true",
+                        help="Don't draw a person whose box hasn't moved for ~10 s (lamps, chairs; also people "
+                             "sitting very still)")
+    parser.add_argument("--face-hold", action="store_true",
+                        help="When the face model misses a frame, keep drawing the person's last face "
+                             "(moved with their head) for up to ~0.3 s")
+    parser.add_argument("--video", default=None, metavar="CLIP",
+                        help="Read a clip recorded with tools/orin_bench/record_video.py instead of the camera, "
+                             "as fast as possible, and exit at its end (repeatable benchmarks)")
+    parser.add_argument("--pipeline", action="store_true",
+                        help="Run the next frame's models in a worker thread while this frame is drawn "
+                             "(faster; picture one frame later)")
+    parser.add_argument("--no-smooth", dest="smooth", action="store_false",
+                        help="Don't smooth landmarks across frames (for A/B comparison)")
+    parser.add_argument("--skelly", action="store_true", help="Filled skeleton face (eyes, nose and mouth cut out)")
+    parser.add_argument("--santa-hat", action="store_true", help="Draw a Santa hat on each face")
+    parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
         "--platform",
@@ -81,4 +116,15 @@ def parse_args() -> Config:
         platform=resolved_platform,
         dump_detections=args.dump_detections,
         dump_every=args.dump_every,
+        fullscreen=args.fullscreen,
+        show_ids=args.show_ids,
+        track_report=args.track_report,
+        require_face=args.require_face,
+        drop_still=args.drop_still,
+        face_hold=args.face_hold,
+        smooth=args.smooth,
+        pipeline=args.pipeline,
+        video=args.video,
+        skelly=args.skelly,
+        santa_hat=args.santa_hat,
     )

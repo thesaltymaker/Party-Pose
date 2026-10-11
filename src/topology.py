@@ -68,3 +68,18 @@ CANONICAL_BLENDSHAPE_INDICES: List[int] = [
     390, 397, 398, 400, 402, 405, 409, 415, 454, 466, 468, 469, 470, 471, 472,
     473, 474, 475, 476,
 ]
+
+# Filled face (--skelly), from Party-Pose.py: face outline, and the features cut out of it.
+FACE_CONTOUR_INDICES = [
+    10, 338, 297, 332, 284, 251, 389, 356, 454, 352, 411, 416, 397,
+    365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 213, 147,
+    234, 127, 162, 21, 54, 103, 67, 109,
+]
+SKELLY_CUTOUTS = [
+    [189, 221, 222, 223, 224, 225, 113, 226, 31, 228, 229, 230, 231, 232, 112, 189],   # left eye
+    [413, 441, 442, 443, 444, 445, 342, 446, 261, 448, 449, 450, 451, 452, 341, 413],  # right eye
+    [4, 44, 237, 218, 131, 198, 196, 197, 419, 420, 360, 438, 457, 274, 4],            # nose
+    [187, 207, 216, 57, 82, 312, 287, 436, 427, 434, 422, 405, 181, 202, 214, 187],    # mouth
+]
+# Santa hat (--santa-hat) sits on the line between these two temple points.
+SANTA_HAT_LEFT, SANTA_HAT_RIGHT = 103, 332

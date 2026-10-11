@@ -67,8 +67,15 @@ class VideoCaptureModule:
     """GPU-resident video capture module for pose detection applications."""
 
     def __init__(self, config: 'Config') -> None:
+        self._clip = None
+        video = getattr(config, 'video', None)
         # Platform-specific pipeline creation
-        if config.platform == "orin":
+        if video:
+            # A recorded clip of raw camera frames: the same white-balance gain and mirroring are applied below.
+            from src.raw_video import RawVideoReader
+            self._clip = RawVideoReader(video)
+            self._cap = None
+        elif config.platform == "orin":
             gst_str = (
                 f"nvarguscamerasrc sensor-id={config.camera} wbmode=3 ! "
                 f"video/x-raw(memory:NVMM), width=(int)1920, height=(int)1080, "
@@ -82,12 +89,14 @@ class VideoCaptureModule:
             # Default laptop / other platform
             self._cap = cv2.VideoCapture(config.camera)
 
-        if not self._cap.isOpened():
-            raise RuntimeError(f"Failed to open camera with index {config.camera}")
-
-        # Read actual camera dimensions — do not force a resolution the camera may not support
-        self.width  = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if self._clip is not None:
+            self.width, self.height = self._clip.width, self._clip.height
+        else:
+            if not self._cap.isOpened():
+                raise RuntimeError(f"Failed to open camera with index {config.camera}")
+            # Read actual camera dimensions — do not force a resolution the camera may not support
+            self.width  = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.mirror = config.mirror
         self._gpu_frame = cv2.cuda_GpuMat()
         self._wb_gain = None
@@ -95,13 +104,16 @@ class VideoCaptureModule:
             self._wb_gain = cv2.cuda_GpuMat()
             self._wb_gain.upload(np.full((self.height, self.width, 3),
                                          [round(g * 128) for g in ORIN_WB_GAIN_BGR], np.uint8))
-        # Initialize night mode detector for Orin platform
-        self._night_mode = NightModeDetector() if config.platform == "orin" else None
+        # Initialize night mode detector for Orin platform (not for a clip: it reads the live camera's gain)
+        self._night_mode = NightModeDetector() if config.platform == "orin" and self._clip is None else None
 
     def read_frame(self) -> cv2.cuda_GpuMat:
-        ret, frame = self._cap.read()
-        if not ret:
-            raise RuntimeError('Camera read failed')
+        if self._clip is not None:
+            frame = self._clip.read()  # EOFError at the end of the clip
+        else:
+            ret, frame = self._cap.read()
+            if not ret:
+                raise RuntimeError('Camera read failed')
 
         self._gpu_frame.upload(frame)
         if self._wb_gain is not None:
@@ -117,4 +129,5 @@ class VideoCaptureModule:
         return self._gpu_frame
 
     def release(self) -> None:
-        self._cap.release()
+        if self._cap is not None:
+            self._cap.release()

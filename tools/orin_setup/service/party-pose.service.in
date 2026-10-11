@@ -1,0 +1,30 @@
+# Party-Pose on the Orin (issue #8). Installed by tools/orin_setup/install_service.sh,
+# which fills in @USER@, @REPO@ and @ENV_FILE@. Edit the template, not /etc/systemd/system/party-pose.service.
+[Unit]
+Description=Party-Pose (full screen, clocks pinned)
+# Needs the desktop: run.sh waits for the X display and the user's X authority file.
+After=graphical.target display-manager.service
+Wants=display-manager.service
+# Give up restarting after 5 crashes in 10 minutes.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@REPO@
+# App arguments, display and power-mode settings. The "-" means a missing file is not an error.
+EnvironmentFile=-@ENV_FILE@
+Environment=PYTHONUNBUFFERED=1
+# "+" runs this step as root: checks the power mode, then pins the clocks with jetson_clocks.
+ExecStartPre=+@REPO@/tools/orin_setup/service/prestart_root.sh
+ExecStart=@REPO@/tools/orin_setup/service/run.sh
+# Esc, q, `systemctl stop` and SIGTERM exit 0: no restart. A crash, a camera error or SIGKILL: restart.
+Restart=on-failure
+RestartSec=5
+# SIGTERM only; poser.py releases the camera and exits. SIGKILL after 30 s (e.g. while a TensorRT engine builds).
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=graphical.target

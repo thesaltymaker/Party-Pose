@@ -52,6 +52,7 @@ class FaceResult:
     blendshapes: Optional[np.ndarray] = None
     person_id: int = 0
     presence: float = 1.0
+    pts: Optional[np.ndarray] = None  # [N, 2] landmark x, y as an array, for smoothing
 
 @dataclass
 class HandResult:
@@ -63,6 +64,7 @@ class HandResult:
         handedness: The handedness of the detected hand ('Right' or 'Left').
         handedness_score: The confidence score of the handedness classification (0.0 to 1.0).
         person_id: Index of the person this hand belongs to (assigned after detection).
+        roi: (cx, cy, size, angle) crop for this hand's next frame, from its landmarks.
     """
     bbox: BoundingBox
     landmarks: List[Landmark]
@@ -70,6 +72,8 @@ class HandResult:
     handedness_score: float = 0.0
     person_id: int = 0
     presence: float = 0.0
+    roi: Optional[tuple] = None
+    pts: Optional[np.ndarray] = None  # [N, 2] landmark x, y as an array, for smoothing
 
 @dataclass
 class BodyResult:
@@ -79,7 +83,10 @@ class BodyResult:
         landmarks: A list of landmarks for the detected body pose.
         presence: The presence score of the body pose (0.0 to 1.0).
         person_id: Index of the person this body belongs to.
+        roi: (cx, cy, size, angle) crop for this person's next frame, from the alignment landmarks.
     """
     landmarks: List[Landmark]
     presence: float = 0.0
     person_id: int = 0
+    roi: Optional[tuple] = None
+    pts: Optional[np.ndarray] = None  # [N, 2] landmark x, y as an array, for smoothing
