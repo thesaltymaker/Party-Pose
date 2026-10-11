@@ -459,7 +459,7 @@ def main():
 
     def render(out) -> bool:
         """Draw and show one frame's results; False when the quit key was pressed."""
-        nonlocal display_gpu, dump_n, last_dump
+        nonlocal display_gpu, dump_n, last_dump, rendered
         (frame_gpu, frame_w, frame_h, all_face_results, all_hand_results, all_body_results, id_labels,
          detections, track_ids) = out
         # Timing for the final stage: GPU download, drawing, imshow, and waitKey.
@@ -501,6 +501,7 @@ def main():
                         track_ids)
 
         fps_counter.tick()
+        rendered += 1
         if config.show_fps:
             renderer.draw_fps(cpu_frame, fps_counter.get_fps())
             fps_counter._print_counter = getattr(fps_counter, "_print_counter", 0) + 1
@@ -535,6 +536,7 @@ def main():
                 counts[k] = 0
         return True
 
+    rendered, t_start = 0, time.monotonic()
     try:
         if config.pipeline:
             _run_pipelined(infer, render)
@@ -545,6 +547,12 @@ def main():
         print('[EXIT] interrupted', flush=True)
     except _Terminated:
         print('[EXIT] SIGTERM received', flush=True)
+    except EOFError:
+        # --video: the whole clip has been processed; one line to compare runs on the same clip.
+        seconds = time.monotonic() - t_start
+        print(f'[BENCH] frames={rendered} seconds={seconds:.1f} fps={rendered / seconds:.2f} '
+              f'pipeline={config.pipeline} smooth={config.smooth}', flush=True)
+        print('[EXIT] end of video', flush=True)
     except RuntimeError as e:
         # Non-zero so the systemd service restarts after e.g. a camera read failure.
         print(f'Runtime error: {e}', file=sys.stderr)
