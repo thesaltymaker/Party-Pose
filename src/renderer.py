@@ -22,9 +22,10 @@ COLOR_SKELLY = (200, 230, 245)  # Bone white (Party-Pose.py FACE_MESH_COLOR)
 SANTA_HAT_RED = (0, 0, 200)
 SANTA_HAT_WHITE = (255, 255, 255)
 
-# MediaPipe Pose landmarks 0-10 are face points (nose, eyes, ears, mouth).
-# Suppressed in draw_body so the dedicated face mesh is used instead.
-_BODY_FACE_LM = frozenset(range(11))
+# MediaPipe Pose landmarks 0-10 are face points (nose, eyes, ears, mouth) and 17-22 are finger points
+# (pinky, index, thumb). Suppressed in draw_body so the face mesh and hand model draw those parts instead;
+# the body stops at the wrists.
+_BODY_SKIP_LM = frozenset(range(11)) | frozenset(range(17, 23))
 
 class Renderer:
     """Renderer: draws pose detection results onto a CPU numpy frame (single download per loop)."""
@@ -94,7 +95,7 @@ class Renderer:
             color = PERSON_COLORS[result.person_id % len(PERSON_COLORS)]
             dim_color = tuple(int(c * 0.3) for c in color)
             for i, lm in enumerate(result.landmarks[:33]):
-                if i in _BODY_FACE_LM:
+                if i in _BODY_SKIP_LM:
                     continue
                 x, y = int(lm.x * cs_x), int(lm.y * cs_y)
                 if not (-0.05 * frame_w <= x <= 1.05 * frame_w and -0.05 * frame_h <= y <= 1.05 * frame_h):
@@ -104,7 +105,7 @@ class Renderer:
                 pt_color = dim_color if lm.visibility < 0.5 else color
                 cv2.circle(cpu_frame, (x, y), 4, pt_color, -1)
             for conn in BODY_CONNECTIONS:
-                if conn[0] in _BODY_FACE_LM or conn[1] in _BODY_FACE_LM:
+                if conn[0] in _BODY_SKIP_LM or conn[1] in _BODY_SKIP_LM:
                     continue
                 start = result.landmarks[conn[0]]
                 end   = result.landmarks[conn[1]]

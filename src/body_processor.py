@@ -1,17 +1,23 @@
 from __future__ import annotations
 import numpy as np
-from typing import Optional
+from typing import Optional, Tuple
 from src.types import BoundingBox, BodyResult
 from src.model_manager import ModelManager
 from src.preprocessor import Preprocessor
 
 
 class BodyProcessor:
-    """Runs pose landmark inference on a pre-detected body bounding box.
+    """Runs pose landmark inference for one person.
 
-    The detection stage has been moved to PersonDetector (YOLOX).
-    The body crop is letterboxed into the model's 256×256 input to preserve
-    aspect ratio for tall person bounding boxes.
+    The pose model (BlazePose GHUM) expects MediaPipe's crop: a square centred on the hips, sized and rotated
+    from the model's own alignment landmarks (33 = hip centre, 34 = body-size point), black outside the frame.
+    The person box letterboxed into the model instead gave a skeleton too small for the person, with low
+    shoulders and short arms (laptop, 99 frames vs MediaPipe: median error 0.22 shoulder widths; with the ROI
+    from the previous frame's landmarks, 0.093).
+
+    With `roi` from this person's previous frame (BodyResult.roi), the model runs once on it. Otherwise (new
+    person, or the ROI centre is far from the body box) it runs on the letterboxed box first to find the
+    alignment landmarks, then on the ROI from them.
     """
 
     INPUT_W = 256
@@ -28,22 +34,36 @@ class BodyProcessor:
         frame_w: int,
         frame_h: int,
         mirror: bool,
+        roi: Optional[Tuple[float, float, float, float]] = None,
     ) -> Optional[BodyResult]:
-        arr, virtual_bbox = Preprocessor.crop_roi_nhwc(
-            frame_gpu, body_bbox, self.INPUT_W, self.INPUT_H,
-            pad_fraction=0.1, frame_w=frame_w, frame_h=frame_h,
-            letterbox=True,
-        )
+        if roi is None or not self._near(roi, body_bbox):
+            arr, virtual_bbox = Preprocessor.crop_roi_nhwc(
+                frame_gpu, body_bbox, self.INPUT_W, self.INPUT_H,
+                pad_fraction=0.1, frame_w=frame_w, frame_h=frame_h,
+                letterbox=True,
+            )
+            lms, presence = self._run(arr)
+            if presence < self.PRESENCE_THRESHOLD:
+                return None
+            first = Preprocessor.to_image_space(lms, self.INPUT_W, self.INPUT_H, virtual_bbox, frame_w, frame_h)
+            roi = Preprocessor.roi_from_alignment((first[33].x, first[33].y), (first[34].x, first[34].y))
 
+        M = Preprocessor.roi_affine(*roi, self.INPUT_W)
+        lms, presence = self._run(Preprocessor.crop_rotated_nhwc(frame_gpu, M, self.INPUT_W))
+        if presence < self.PRESENCE_THRESHOLD:
+            return None
+        landmarks = Preprocessor.to_image_space_affine(lms, M)
+        next_roi = Preprocessor.roi_from_alignment((landmarks[33].x, landmarks[33].y),
+                                                   (landmarks[34].x, landmarks[34].y))
+        return BodyResult(landmarks=landmarks, presence=presence, roi=next_roi)
+
+    def _run(self, arr: np.ndarray) -> Tuple[np.ndarray, float]:
         session = self.model_manager.get_session('pose_landmarks')
         outputs = session.run(['Identity', 'Identity_1'], {'input_1': arr})
+        return outputs[0].reshape(39, 5), float(outputs[1][0, 0])
 
-        body_presence = float(outputs[1][0, 0])
-        if body_presence < self.PRESENCE_THRESHOLD:
-            return None
-
-        lms = outputs[0].reshape(39, 5)
-        landmarks = Preprocessor.to_image_space(
-            lms, self.INPUT_W, self.INPUT_H, virtual_bbox, frame_w, frame_h, mirror,
-        )
-        return BodyResult(landmarks=landmarks, presence=body_presence)
+    @staticmethod
+    def _near(roi, box: BoundingBox) -> bool:
+        """The ROI centre (hips) lies inside the body box grown by half its size on each side."""
+        cx, cy = roi[0], roi[1]
+        return (box.x - box.w / 2 <= cx <= box.x + 1.5 * box.w) and (box.y - box.h / 2 <= cy <= box.y + 1.5 * box.h)

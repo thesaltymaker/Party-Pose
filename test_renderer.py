@@ -56,3 +56,17 @@ def test_santa_hat_above_temples_flops_by_person():
     red_even = np.argwhere((even == SANTA_HAT_RED).all(axis=2))[:, 1].mean()
     red_odd = np.argwhere((odd == SANTA_HAT_RED).all(axis=2))[:, 1].mean()
     assert red_even > 200 > red_odd                  # even ids flop right, odd ids left
+
+
+def test_body_skeleton_stops_at_the_wrists():
+    # Hands are drawn by the hand model; the pose model's finger points (17-22) must not be drawn.
+    from src.types import BodyResult
+    lms = [Landmark(0.0, 0.0, 0.0, presence=-1.0) for _ in range(39)]  # not drawn
+    lms[15] = Landmark(100.0, 100.0, 0.0, presence=5.0)                # left wrist
+    for i in (17, 19, 21):                                             # left pinky, index, thumb
+        lms[i] = Landmark(300.0, 300.0, 0.0, presence=5.0)
+    frame = np.zeros((H, W, 3), np.uint8)
+    Renderer().draw_body(frame, [BodyResult(landmarks=lms)], W, H)
+    assert frame[100, 100].any()           # wrist drawn
+    assert not frame[300, 300].any()       # finger points not drawn
+    assert not frame[200, 200].any()       # no line from the wrist to them

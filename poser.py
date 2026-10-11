@@ -241,7 +241,8 @@ def main():
     body_proc   = BodyProcessor(model_manager) if config.body else None
 
     tracker     = PersonTracker()
-    smoother    = PoseSmoother() if config.smooth else None  # steadies body crops and landmarks per person
+    smoother    = PoseSmoother() if config.smooth else None  # smooths landmarks per person across frames
+    body_rois   = {}  # track id -> pose crop (cx, cy, size, angle) from that person's last body landmarks
     track_stats = TrackStats() if config.track_report > 0 else None
     last_report = time.monotonic()
     require_face = config.require_face and face_proc is not None
@@ -318,6 +319,8 @@ def main():
                 # flickering false positive gets no skeleton and can't take a real person's head or hands.
                 tracks = tracker.update_tracks(detections.body_boxes)
                 track_ids = [tr.id for tr in tracks]
+                live_ids = {tr.id for tr in tracker.tracks}
+                body_rois = {k: v for k, v in body_rois.items() if k in live_ids}
                 for line in tracker.events:
                     print(line, flush=True)
                 tracker.events.clear()
@@ -378,8 +381,9 @@ def main():
 
                     if body_proc:
                         t = time.perf_counter()
-                        crop = smoother.crop(person_id, body_bbox, t_frame) if smoother else body_bbox
-                        body = body_proc.process(frame_gpu, crop, frame_w, frame_h, config.mirror)
+                        body = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror,
+                                                 roi=body_rois.get(person_id))
+                        body_rois[person_id] = body.roi if body is not None else None
                         stage_ms['body'] += (time.perf_counter() - t) * 1000
                         if body is not None:
                             body.person_id = person_id

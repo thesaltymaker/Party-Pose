@@ -1,4 +1,6 @@
 from __future__ import annotations
+import math
+
 import cv2
 import numpy as np
 from typing import List, Tuple
@@ -112,6 +114,42 @@ class Preprocessor:
                 x=crop_x, y=crop_y, w=crop_w, h=crop_h, confidence=bbox.confidence
             )
             return arr, actual_bbox
+
+    @staticmethod
+    def roi_from_alignment(centre, size_point, scale: float = 1.25) -> Tuple[float, float, float, float]:
+        """MediaPipe's pose ROI from the two alignment points (pose landmarks 33 and 34): a square centred on
+        the hips, 2 x their distance x `scale` wide, rotated so the hips-to-size-point line points up.
+        Returns (cx, cy, size, angle in radians)."""
+        (x0, y0), (x1, y1) = centre, size_point
+        angle = math.pi / 2 - math.atan2(-(y1 - y0), x1 - x0)
+        angle -= 2 * math.pi * math.floor((angle + math.pi) / (2 * math.pi))
+        return float(x0), float(y0), 2 * math.hypot(x1 - x0, y1 - y0) * scale, angle
+
+    @staticmethod
+    def roi_affine(cx: float, cy: float, size: float, angle: float, target: int) -> np.ndarray:
+        """2x3 matrix from model pixels (target x target) to frame pixels for a rotated square ROI."""
+        c, s, k = math.cos(angle), math.sin(angle), size / target
+        h = target / 2
+        return np.array([[c * k, -s * k, cx - (c - s) * h * k],
+                         [s * k, c * k, cy - (s + c) * h * k]])
+
+    @staticmethod
+    def crop_rotated_nhwc(frame_gpu: cv2.cuda_GpuMat, M: np.ndarray, target: int) -> np.ndarray:
+        """Crop the ROI given by `roi_affine` into a [1, target, target, 3] RGB float array in [0, 1].
+        Outside the frame is black, as in MediaPipe."""
+        warped = cv2.cuda.warpAffine(frame_gpu, cv2.invertAffineTransform(M), (target, target),
+                                     flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        rgb = cv2.cuda.cvtColor(warped, cv2.COLOR_BGR2RGB).download()
+        return np.expand_dims(rgb.astype(np.float32) / 255.0, axis=0)
+
+    @staticmethod
+    def to_image_space_affine(lms_model: np.ndarray, M: np.ndarray) -> List[Landmark]:
+        """Landmarks [N, 5] (x, y, z, visibility, presence in model pixels) to frame pixels through `roi_affine`."""
+        xy = lms_model[:, :2] @ M[:, :2].T + M[:, 2]
+        zs = lms_model[:, 2] * math.hypot(M[0, 0], M[1, 0])
+        return [Landmark(x=x, y=y, z=z, visibility=v, presence=p)
+                for (x, y), z, v, p in zip(xy.tolist(), zs.tolist(), lms_model[:, 3].tolist(),
+                                           lms_model[:, 4].tolist())]
 
     @staticmethod
     def to_image_space(

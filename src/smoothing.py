@@ -1,11 +1,8 @@
-"""Smoothing of body crops and landmarks across frames, per person.
+"""Smoothing of landmarks across frames, per person.
 
-The detector's body box flips between a small and a big box (Orin: 117x239 and 220x510, each held for a few
-frames; issue #6), so the pose crop moved and every landmark jumped even when the person stood still. The body
-crop is the union of the person's boxes from the last CROP_WINDOW seconds: it stays on the big box through
-flips, grows at once when the box grows, and covers a fast dancer (the pose model letterboxes the crop to a
-square, so extra width on a tall box costs nothing). The head box is not smoothed: the face model loses faces
-when the head is off-centre in the crop (unpadded crop 37% kept vs 0-5% padded, issue #6/#7).
+The body crop follows the person's own landmarks (BodyProcessor), not the detector's box, which flips between
+a small and a big box. The head box is not smoothed: the face model loses faces when the head is off-centre in
+the crop (unpadded crop 37% kept vs 0-5% padded, issue #6/#7).
 
 Landmarks of faces, hands and bodies go through a One Euro filter (Casiez et al. 2012, the filter MediaPipe
 uses): a low-pass filter whose cutoff rises with speed, so a still person is smoothed hard and a fast dancer
@@ -21,17 +18,15 @@ of the same person from earlier frames by wrist position.
 from __future__ import annotations
 
 import math
-from collections import deque
-from typing import Deque, Dict, Hashable, List, Tuple
+from typing import Dict, Hashable, List
 
 import numpy as np
 
-from src.types import BodyResult, BoundingBox, FaceResult, HandResult
+from src.types import BodyResult, FaceResult, HandResult
 
 MIN_CUTOFF = 0.3  # Hz: cutoff when still (lower = steadier, more lag on slow movement)
 BETA = 1.5        # cutoff added per (object size / second) of speed (higher = less lag when fast)
 D_CUTOFF = 1.0    # Hz: cutoff for the speed estimate
-CROP_WINDOW = 0.3  # s of body boxes joined into the crop; longer than a flip is held (3-6 frames at 26 FPS)
 
 
 def _alpha(cutoff, dt: float):
@@ -90,24 +85,11 @@ def _extent(pts: np.ndarray) -> float:
 
 
 class PoseSmoother:
-    """Steadies each person's body crop and smooths the landmarks of every face, hand and body drawn."""
+    """Smooths the landmarks of every face, hand and body drawn."""
 
     def __init__(self) -> None:
         self.smoother = Smoother()
         self._hand_slots = 0
-        self._crops: Dict[Hashable, Deque[Tuple[float, BoundingBox]]] = {}
-
-    def crop(self, key: Hashable, b: BoundingBox, t: float) -> BoundingBox:
-        """The union of this key's boxes from the last CROP_WINDOW seconds, including b."""
-        boxes = self._crops.setdefault(key, deque())
-        boxes.append((t, b))
-        while t - boxes[0][0] > CROP_WINDOW:
-            boxes.popleft()
-        x0 = min(bb.x for _, bb in boxes)
-        y0 = min(bb.y for _, bb in boxes)
-        x1 = max(bb.x + bb.w for _, bb in boxes)
-        y1 = max(bb.y + bb.h for _, bb in boxes)
-        return BoundingBox(x0, y0, x1 - x0, y1 - y0, b.confidence)
 
     def smooth(self, faces: List[FaceResult], hands: List[HandResult], bodies: List[BodyResult],
                t: float) -> None:
@@ -121,7 +103,6 @@ class PoseSmoother:
             used.add(key)
             self._smooth_landmarks(key, hand.landmarks, t)
         self.smoother.prune(t)
-        self._crops = {k: v for k, v in self._crops.items() if t - v[-1][0] <= CROP_WINDOW}
 
     def _smooth_landmarks(self, key: Hashable, landmarks, t: float) -> None:
         if not landmarks:

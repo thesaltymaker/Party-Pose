@@ -79,7 +79,9 @@ class BodyResult:
         landmarks: A list of landmarks for the detected body pose.
         presence: The presence score of the body pose (0.0 to 1.0).
         person_id: Index of the person this body belongs to.
+        roi: (cx, cy, size, angle) crop for this person's next frame, from the alignment landmarks.
     """
     landmarks: List[Landmark]
     presence: float = 0.0
     person_id: int = 0
+    roi: Optional[tuple] = None
