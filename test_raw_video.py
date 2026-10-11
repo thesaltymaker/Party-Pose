@@ -67,3 +67,19 @@ def test_video_option():
         assert parse_args().video is None
     with patch('sys.argv', ['poser.py', '--video', 'testdata/clip']):
         assert parse_args().video == 'testdata/clip'
+
+
+def test_reader_drops_each_frame_from_the_file_cache(tmp_path, monkeypatch):
+    # Orin: replaying an 11 GB clip filled the shared CPU/GPU memory with file cache and the next run's GPU
+    # allocation failed (NvMap error 12). Each frame read is dropped from the cache.
+    import os
+    calls = []
+    monkeypatch.setattr(os, 'posix_fadvise', lambda fd, off, n, advice: calls.append((off, n, advice)))
+    path = tmp_path / 'clip'
+    with RawVideoWriter(path, 8, 6) as w:
+        for f in _frames(2):
+            w.write(f)
+    r = RawVideoReader(path)
+    r.read()
+    r.read()
+    assert calls == [(0, 144, os.POSIX_FADV_DONTNEED), (144, 144, os.POSIX_FADV_DONTNEED)]
