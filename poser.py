@@ -21,6 +21,7 @@ from src.fps_counter import FPSCounter
 from src.tracker import PersonTracker
 from src.smoothing import PoseSmoother
 from src.track_stats import TrackStats
+from src.flicker import FlickerCounter
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult, Landmark
 
 
@@ -316,6 +317,7 @@ def main():
     counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'faces_held',
                              'hands_found')}
     held_faces = {}  # track id -> (last good FaceResult, its head box, frame number), for --face-hold
+    flicker = FlickerCounter()  # [FLICKER] blink counts per part, printed at the end of a --video run
     frame_no = 0
     face_logits: List[float] = []  # face model logits of drawn faces, for tuning FACE_VERIFY_PRESENCE
 
@@ -348,6 +350,7 @@ def main():
         detections = None
         track_ids: List[int] = []
         id_labels = []  # (track id, body box) for --show-ids
+        drawn = set()  # (track id, part) drawn this frame, for [FLICKER]
 
         if person_proc:
             t = time.perf_counter()
@@ -436,10 +439,11 @@ def main():
                     t = time.perf_counter()
                     hands = hand_proc.process(frame_gpu, body.landmarks, hand_rois.get(person_id, (None, None)))
                     hand_rois[person_id] = tuple(h.roi if h is not None else None for h in hands)
-                    for hand in hands:
+                    for side, hand in enumerate(hands):
                         if hand is not None:
                             hand.person_id = person_id
                             all_hand_results.append(hand)
+                            drawn.add((person_id, f'hand{side}'))
                     stage_ms['hands'] += (time.perf_counter() - t) * 1000
                     counts['hands_found'] += sum(h is not None for h in hands)
 
@@ -451,6 +455,10 @@ def main():
                 last_report = time.monotonic()
                 for line in track_stats.report({t.id for t in tracker.tracks + tracker.lost}):
                     print(line, flush=True)
+
+        drawn.update((f.person_id, 'face') for f in all_face_results)
+        drawn.update((b.person_id, 'body') for b in all_body_results)
+        flicker.update(drawn)
 
         if smoother:
             t = time.perf_counter()
@@ -559,6 +567,7 @@ def main():
         seconds = time.monotonic() - t_start
         print(f'[BENCH] frames={rendered} seconds={seconds:.1f} fps={rendered / seconds:.2f} '
               f'pipeline={config.pipeline} smooth={config.smooth}', flush=True)
+        print(flicker.report(), flush=True)
         print('[EXIT] end of video', flush=True)
     except RuntimeError as e:
         # Non-zero so the systemd service restarts after e.g. a camera read failure.
