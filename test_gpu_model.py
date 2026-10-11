@@ -32,9 +32,17 @@ def frame():
 
 
 def _plain(mm, model, outs, arr):
-    # A CUDA-graph session (Orin) only runs through I/O binding, so the reference uses a plain session.
+    """The same model run the old way (numpy in, session.run). A CUDA-graph session only runs through I/O binding,
+    so this is a separate session: on the Orin TensorRT FP16 with the same cached engine, so outputs must match
+    exactly (an FP32 reference differs by up to 15 model pixels on noise input); elsewhere plain CUDA."""
+    if 'TensorrtExecutionProvider' in mm.get_session(model).get_providers():
+        providers = [('TensorrtExecutionProvider', {
+            'trt_max_workspace_size': 2 * 1024 ** 3, 'trt_fp16_enable': True, 'trt_engine_cache_enable': True,
+            'trt_engine_cache_path': str(mm.models_dir / 'trt_cache')}), 'CUDAExecutionProvider']
+    else:
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
     return ort.InferenceSession(str(mm.models_dir / mm._MODEL_FILES[model]),
-                                providers=['CUDAExecutionProvider', 'CPUExecutionProvider']).run(outs, {'input_1': arr})
+                                providers=providers).run(outs, {'input_1': arr})
 
 
 @pytest.mark.parametrize('model,size,outs', [
@@ -49,8 +57,7 @@ def test_gpu_crop_gives_the_same_outputs(mm, frame, model, size, outs):
         got = gm.run(frame, M)
         for r, g in zip(ref, got):
             assert g.shape == r.shape
-            # Orin: TensorRT FP16 against a plain FP32 reference; landmarks are in model pixels (0-256).
-            assert np.allclose(g, r, atol=0.5), (model, cx, float(np.abs(g - r).max()))
+            assert np.allclose(g, r, atol=1e-3), (model, cx, float(np.abs(g - r).max()))
 
 
 def test_cpu_array_input_gives_the_same_outputs(mm):
@@ -58,7 +65,7 @@ def test_cpu_array_input_gives_the_same_outputs(mm):
     arr = np.random.default_rng(1).random((1, 256, 256, 3), dtype=np.float32)
     ref = _plain(mm, 'pose_landmarks', ['Identity', 'Identity_1'], arr)
     got = gm.run_array(arr)
-    assert np.allclose(got[0], ref[0], atol=0.5)
+    assert np.allclose(got[0], ref[0], atol=1e-3)
 
 
 def test_input_buffer_stays_at_one_gpu_address(mm, frame):
