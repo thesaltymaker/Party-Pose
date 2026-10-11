@@ -73,17 +73,6 @@ def _held_face(held_faces, person_id: int, head: BoundingBox, frame_no: int) -> 
     return _moved_face(entry[0], entry[1], head)
 
 
-def _find_hands_for_body(body: BoundingBox, hand_boxes: List[BoundingBox]) -> List[BoundingBox]:
-    """Return hand boxes whose centroid falls within the body bbox (with lateral margin)."""
-    margin_x = body.w * 0.5
-    margin_y = body.h * 0.15
-    return [
-        h for h in hand_boxes
-        if (body.x - margin_x <= h.x + h.w / 2 <= body.x + body.w + margin_x
-            and body.y - margin_y <= h.y + h.h / 2 <= body.y + body.h + margin_y)
-    ]
-
-
 def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies, cs_x: float, cs_y: float,
                 track_ids: Optional[List[int]] = None) -> None:
     """Debug: save the frame with detector boxes + scores drawn, and all scores as JSON."""
@@ -144,14 +133,6 @@ def _drop_nested_bodies(body_boxes: List[BoundingBox], head_boxes: List[Bounding
             elif share >= duplicate_inside and i not in drop and j not in drop:
                 drop.add(j if fits_head(a) and not fits_head(b) else i)
     return [a for i, a in enumerate(body_boxes) if i not in drop]
-
-
-def _claim_hands(body: BoundingBox, hands: List[BoundingBox]) -> List[BoundingBox]:
-    """This body's hands, removed from the pool so no other body gets them."""
-    own = _find_hands_for_body(body, hands)
-    for h in own:
-        hands.remove(h)
-    return own
 
 
 def _screen_size() -> Optional[tuple]:
@@ -243,6 +224,7 @@ def main():
     tracker     = PersonTracker()
     smoother    = PoseSmoother() if config.smooth else None  # smooths landmarks per person across frames
     body_rois   = {}  # track id -> pose crop (cx, cy, size, angle) from that person's last body landmarks
+    hand_rois   = {}  # track id -> (left, right) hand crops from that person's last hand landmarks
     track_stats = TrackStats() if config.track_report > 0 else None
     last_report = time.monotonic()
     require_face = config.require_face and face_proc is not None
@@ -271,7 +253,7 @@ def main():
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'smooth', 'render')}
     counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'faces_held',
-                             'hands_run')}
+                             'hands_found')}
     held_faces = {}  # track id -> (last good FaceResult, its head box, frame number), for --face-hold
     frame_no = 0
     face_logits: List[float] = []  # face model logits of drawn faces, for tuning FACE_VERIFY_PRESENCE
@@ -321,6 +303,7 @@ def main():
                 track_ids = [tr.id for tr in tracks]
                 live_ids = {tr.id for tr in tracker.tracks}
                 body_rois = {k: v for k, v in body_rois.items() if k in live_ids}
+                hand_rois = {k: v for k, v in hand_rois.items() if k in live_ids}
                 for line in tracker.events:
                     print(line, flush=True)
                 tracker.events.clear()
@@ -331,13 +314,11 @@ def main():
                 people = sorted(((tr, box) for tr, box in confirmed if not (config.drop_still and tr.is_still())),
                                 key=lambda p: (-p[0].age, p[0].id))
                 counts['still'] += len(confirmed) - len(people)
-                free_hands = list(detections.hand_boxes)
                 heads = _assign_heads([box for _, box in people], detections.head_boxes)
                 counts['people'] += len(people)
                 for (track, body_bbox), head_bbox in zip(people, heads):
                     person_id = track.id
                     still = track.is_still()
-                    person_hands = _claim_hands(body_bbox, free_hands)
                     face = face_logit = body = None
 
                     if face_proc and head_bbox is not None:
@@ -371,14 +352,6 @@ def main():
                     counts['drawn'] += 1
                     id_labels.append((person_id, body_bbox))
 
-                    if hand_proc and person_hands:
-                        t = time.perf_counter()
-                        for hand in hand_proc.process(frame_gpu, person_hands, frame_w, frame_h, config.mirror):
-                            hand.person_id = person_id
-                            all_hand_results.append(hand)
-                        stage_ms['hands'] += (time.perf_counter() - t) * 1000
-                        counts['hands_run'] += len(person_hands)
-
                     if body_proc:
                         t = time.perf_counter()
                         body = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror,
@@ -388,6 +361,18 @@ def main():
                         if body is not None:
                             body.person_id = person_id
                             all_body_results.append(body)
+
+                    # Hands are cropped from the pose's wrists (or the hand's last landmarks), so they need the body.
+                    if hand_proc and body is not None:
+                        t = time.perf_counter()
+                        hands = hand_proc.process(frame_gpu, body.landmarks, hand_rois.get(person_id, (None, None)))
+                        hand_rois[person_id] = tuple(h.roi if h is not None else None for h in hands)
+                        for hand in hands:
+                            if hand is not None:
+                                hand.person_id = person_id
+                                all_hand_results.append(hand)
+                        stage_ms['hands'] += (time.perf_counter() - t) * 1000
+                        counts['hands_found'] += sum(h is not None for h in hands)
 
                     if track_stats:
                         track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, body,

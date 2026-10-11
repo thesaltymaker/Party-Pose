@@ -1,4 +1,4 @@
-from poser import _assign_heads, _claim_hands, _drop_nested_bodies
+from poser import _assign_heads, _drop_nested_bodies
 from src.types import BoundingBox
 
 
@@ -53,14 +53,6 @@ def test_separate_bodies_are_kept():
     a = _box(100, 100, 200, 400, conf=0.9)
     b = _box(600, 100, 200, 400, conf=0.4)
     assert _drop_nested_bodies([a, b]) == [a, b]
-
-
-def test_hands_go_to_only_one_body():
-    person = _box(100, 100, 200, 400)
-    around = _box(50, 50, 400, 500, conf=0.4)
-    hands = [_box(90, 250, 40, 40)]
-    assert len(_claim_hands(person, hands)) == 1
-    assert _claim_hands(around, hands) == []
 
 
 def test_fit_keeps_aspect_ratio():
