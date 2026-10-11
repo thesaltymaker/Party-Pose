@@ -4,6 +4,7 @@ import numpy as np
 from typing import List, Optional, Sequence, Tuple
 from src.types import BoundingBox, HandResult, Landmark
 from src.model_manager import ModelManager
+from src.gpu_model import GpuModel, gpu_model
 from src.preprocessor import Preprocessor
 
 Roi = Tuple[float, float, float, float]  # (cx, cy, size, angle), as Preprocessor.roi_affine takes
@@ -63,6 +64,7 @@ class HandProcessor:
 
     def __init__(self, model_manager: ModelManager) -> None:
         self.model_manager = model_manager
+        self._model: Optional[GpuModel] = None  # created on first use (loads the session)
 
     def process(self, frame_gpu, pose: Sequence[Landmark], prev_rois: Sequence[Optional[Roi]]) -> List[Optional[HandResult]]:
         """One HandResult or None per side. prev_rois: each side's HandResult.roi from the previous frame, or None."""
@@ -76,9 +78,10 @@ class HandProcessor:
 
     def _run(self, frame_gpu, roi: Roi) -> Optional[HandResult]:
         M = Preprocessor.roi_affine(*roi, self.LANDMARK_SIZE)
-        arr = Preprocessor.crop_rotated_nhwc(frame_gpu, M, self.LANDMARK_SIZE)
-        lms, presence, handedness = self.model_manager.get_session('hand_landmarks').run(
-            ['Identity', 'Identity_1', 'Identity_2'], {'input_1': arr})
+        if self._model is None:
+            self._model = gpu_model(self.model_manager, 'hand_landmarks', 'input_1',
+                                   ['Identity', 'Identity_1', 'Identity_2'], self.LANDMARK_SIZE)
+        lms, presence, handedness = self._model.run(frame_gpu, M)
         presence, handedness = float(presence[0, 0]), float(handedness[0, 0])
         if presence < self.CONF_THRESHOLD:
             return None

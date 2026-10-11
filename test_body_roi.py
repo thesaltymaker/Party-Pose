@@ -43,6 +43,9 @@ def test_landmarks_map_back_through_the_roi():
 
 
 class _Session:
+    def get_providers(self):
+        return ['CPUExecutionProvider']
+
     """Pose model stand-in: hips at the crop centre, body-size point 64 px above, presence 0.9."""
     def __init__(self):
         self.runs = 0

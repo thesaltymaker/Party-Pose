@@ -35,6 +35,9 @@ def test_hand_roi_from_landmarks_is_square_around_the_palm():
 
 
 class _Session:
+    def get_providers(self):
+        return ['CPUExecutionProvider']
+
     """Hand model stand-in. Outputs in the model's order: landmarks, presence (Identity_1), handedness (Identity_2)."""
     def __init__(self, presences):
         self.presences = list(presences)

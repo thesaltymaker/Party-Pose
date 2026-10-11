@@ -3,6 +3,7 @@ import numpy as np
 from typing import Optional, Tuple
 from src.types import BoundingBox, BodyResult
 from src.model_manager import ModelManager
+from src.gpu_model import GpuModel, gpu_model
 from src.preprocessor import Preprocessor
 
 
@@ -26,6 +27,7 @@ class BodyProcessor:
 
     def __init__(self, model_manager: ModelManager) -> None:
         self.model_manager = model_manager
+        self._model: Optional[GpuModel] = None  # created on first use (loads the session)
 
     def process(
         self,
@@ -42,14 +44,14 @@ class BodyProcessor:
                 pad_fraction=0.1, frame_w=frame_w, frame_h=frame_h,
                 letterbox=True,
             )
-            lms, presence = self._run(arr)
+            lms, presence = self._outputs(self._gpu().run_array(arr))
             if presence < self.PRESENCE_THRESHOLD:
                 return None
             first = Preprocessor.to_image_space(lms, self.INPUT_W, self.INPUT_H, virtual_bbox, frame_w, frame_h)
             roi = Preprocessor.roi_from_alignment((first[33].x, first[33].y), (first[34].x, first[34].y))
 
         M = Preprocessor.roi_affine(*roi, self.INPUT_W)
-        lms, presence = self._run(Preprocessor.crop_rotated_nhwc(frame_gpu, M, self.INPUT_W))
+        lms, presence = self._outputs(self._gpu().run(frame_gpu, M))
         if presence < self.PRESENCE_THRESHOLD:
             return None
         landmarks = Preprocessor.to_image_space_affine(lms, M)
@@ -58,9 +60,14 @@ class BodyProcessor:
         return BodyResult(landmarks=landmarks, presence=presence, roi=next_roi,
                           pts=lms[:, :2] @ M[:, :2].T + M[:, 2])
 
-    def _run(self, arr: np.ndarray) -> Tuple[np.ndarray, float]:
-        session = self.model_manager.get_session('pose_landmarks')
-        outputs = session.run(['Identity', 'Identity_1'], {'input_1': arr})
+    def _gpu(self) -> GpuModel:
+        if self._model is None:
+            self._model = gpu_model(self.model_manager, 'pose_landmarks', 'input_1', ['Identity', 'Identity_1'],
+                                   self.INPUT_W)
+        return self._model
+
+    @staticmethod
+    def _outputs(outputs) -> Tuple[np.ndarray, float]:
         return outputs[0].reshape(39, 5), float(outputs[1][0, 0])
 
     @staticmethod

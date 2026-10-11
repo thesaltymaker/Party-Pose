@@ -28,7 +28,11 @@ class ModelManager:
     # backbone runs in TensorRT. min_subgraph_size keeps tiny leftover fragments off TRT.
     # face_landmarks: FaceProcessor runs all faces of a frame together (1-4 per run). Without a fixed shape range
     # TensorRT rebuilds the engine (~6 min on the Orin, app frozen) the first time a new batch size appears.
+    # hand_landmarks / pose_landmarks: always run through GpuModel (fixed GPU input/output buffers), so TensorRT can
+    # record each model's kernel launches once as a CUDA graph and replay them as one (Orin: ~0.3-0.5 ms per run).
     _TRT_EXTRA_OPTS = {
+        hand_landmarks: {'trt_cuda_graph_enable': True},
+        pose_landmarks: {'trt_cuda_graph_enable': True},
         face_landmarks: {
             'trt_profile_min_shapes': 'input_12:1x256x256x3',
             'trt_profile_opt_shapes': 'input_12:2x256x256x3',
