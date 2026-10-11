@@ -8,7 +8,7 @@ cd "$(dirname "$0")/../.."
 label=$1; shift
 clip=${CLIP:-testdata/clips/two_people}
 runs=${RUNS:-2}
-args=${ARGS:---platform orin --fullscreen --fps --drop-still --face-hold --black-bg --skelly}
+args=${ARGS:---platform orin --fullscreen --fps --mirror --drop-still --face-hold --black-bg --skelly}
 out=/tmp/ppbench/$label.log
 mkdir -p /tmp/ppbench; : > "$out"
 if [ -z "${DISPLAY:-}" ]; then
