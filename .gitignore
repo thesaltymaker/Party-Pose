@@ -70,3 +70,6 @@ env.*/
 # Debug screenshots and detection dumps (may show private rooms); only issue4/ and top-level demo shots are tracked
 screenshots/*/
 !screenshots/issue4/
+
+# Local test recordings of people and the eval scripts/models that use them; never commit
+testdata/
