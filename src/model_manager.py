@@ -26,7 +26,14 @@ class ModelManager:
     # ("Layers missing empty tensor support"). None of these op types appear in its
     # YOLOX backbone, so excluding them keeps only the NMS tail on CUDA/CPU while the
     # backbone runs in TensorRT. min_subgraph_size keeps tiny leftover fragments off TRT.
+    # face_landmarks: FaceProcessor runs all faces of a frame together (1-4 per run). Without a fixed shape range
+    # TensorRT rebuilds the engine (~6 min on the Orin, app frozen) the first time a new batch size appears.
     _TRT_EXTRA_OPTS = {
+        face_landmarks: {
+            'trt_profile_min_shapes': 'input_12:1x256x256x3',
+            'trt_profile_opt_shapes': 'input_12:2x256x256x3',
+            'trt_profile_max_shapes': 'input_12:4x256x256x3',
+        },
         person_detector: {
             'trt_op_types_to_exclude': 'NonMaxSuppression,NonZero,RoiAlign,Cast,Squeeze,Shape,Relu,Gather,GatherND',
             'trt_min_subgraph_size': 20,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 import numpy as np
-from typing import Optional
+from typing import List, Optional
 from src.types import BoundingBox, FaceResult
 from src.model_manager import ModelManager
 from src.preprocessor import Preprocessor
@@ -21,10 +21,15 @@ class FaceProcessor:
     # ball, fists, lampshade and backs of heads score below it.
     PRESENCE_THRESHOLD = 0.5
 
+    # Faces per model run. On the Orin two faces in one run cost 2.89 ms against 2 x 2.36 ms; the TensorRT engine
+    # is built for batches of 1-4 (ModelManager), so more people are split into runs of up to 4.
+    MAX_BATCH = 4
+
     def __init__(self, model_manager: ModelManager, enable_blendshapes: bool = False) -> None:
         self.model_manager = model_manager
         self.enable_blendshapes = enable_blendshapes
         self.last_logit: Optional[float] = None  # face score logit of the last process() call, kept or not
+        self.last_logits: List[float] = []       # the same for each head of the last process_many() call
 
     def process(
         self,
@@ -34,29 +39,36 @@ class FaceProcessor:
         frame_h: int,
         mirror: bool,
     ) -> Optional[FaceResult]:
-        roi_arr, crop_bbox = Preprocessor.crop_roi_nhwc(
-            frame_gpu, head_bbox, self.LANDMARK_W, self.LANDMARK_H,
-            pad_fraction=0.0, frame_w=frame_w, frame_h=frame_h,
-        )
+        face = self.process_many(frame_gpu, [head_bbox], frame_w, frame_h, mirror)[0]
+        self.last_logit = self.last_logits[0]
+        return face
 
+    def process_many(self, frame_gpu, head_bboxes: List[BoundingBox], frame_w: int, frame_h: int,
+                     mirror: bool) -> List[Optional[FaceResult]]:
+        """One FaceResult (or None when the face score is too low) per head box, in order. All heads go through
+        the face model together, up to MAX_BATCH per run."""
+        crops = [Preprocessor.crop_roi_nhwc(frame_gpu, head, self.LANDMARK_W, self.LANDMARK_H,
+                                            pad_fraction=0.0, frame_w=frame_w, frame_h=frame_h)
+                 for head in head_bboxes]
         session = self.model_manager.get_session('face_landmarks')
-        landmarks_raw, presence_logit = session.run(['Identity', 'Identity_1'], {'input_12': roi_arr})
-        landmarks_raw = landmarks_raw.reshape(-1, 478, 3)
-        self.last_logit = float(presence_logit.flat[0])
-        presence = float(1.0 / (1.0 + np.exp(-np.clip(presence_logit.flat[0], -50, 50))))
+        raws, logits = [], []
+        for i in range(0, len(crops), self.MAX_BATCH):
+            batch = np.concatenate([arr for arr, _ in crops[i:i + self.MAX_BATCH]])
+            landmarks_raw, presence_logit = session.run(['Identity', 'Identity_1'], {'input_12': batch})
+            raws.extend(landmarks_raw.reshape(-1, 478, 3))
+            logits.extend(float(v) for v in presence_logit.reshape(-1))
+        self.last_logits = logits
+        return [self._result(head, crop_bbox, raw, logit, frame_w, frame_h, mirror)
+                for head, (_, crop_bbox), raw, logit in zip(head_bboxes, crops, raws, logits)]
+
+    def _result(self, head_bbox: BoundingBox, crop_bbox: BoundingBox, raw: np.ndarray, logit: float,
+                frame_w: int, frame_h: int, mirror: bool) -> Optional[FaceResult]:
+        presence = float(1.0 / (1.0 + np.exp(-np.clip(logit, -50, 50))))
         if presence < self.PRESENCE_THRESHOLD:
             return None
-
-        landmarks = Preprocessor.to_image_space(
-            landmarks_raw[0], self.LANDMARK_W, self.LANDMARK_H,
-            crop_bbox, frame_w, frame_h, mirror,
-        )
-
-        blendshapes = None
-        if self.enable_blendshapes and landmarks_raw.size > 0:
-            blendshapes = self._run_blendshapes(landmarks_raw[0])
-
-        raw = landmarks_raw[0]
+        landmarks = Preprocessor.to_image_space(raw, self.LANDMARK_W, self.LANDMARK_H,
+                                                crop_bbox, frame_w, frame_h, mirror)
+        blendshapes = self._run_blendshapes(raw) if self.enable_blendshapes else None
         pts = np.c_[crop_bbox.x + raw[:, 0] / self.LANDMARK_W * crop_bbox.w,
                     crop_bbox.y + raw[:, 1] / self.LANDMARK_H * crop_bbox.h]
         return FaceResult(bbox=head_bbox, landmarks=landmarks, blendshapes=blendshapes, presence=presence, pts=pts)

@@ -378,17 +378,24 @@ def main():
             counts['still'] += len(confirmed) - len(people)
             heads = _assign_heads([box for _, box in people], detections.head_boxes)
             counts['people'] += len(people)
-            for (track, body_bbox), head_bbox in zip(people, heads):
+            # Every person's face goes through the face model in one run (cheaper per face on the Orin).
+            faces_by_person = {}  # index in people -> (FaceResult or None, face logit)
+            if face_proc:
+                with_head = [k for k, head in enumerate(heads) if head is not None]
+                if with_head:
+                    t = time.perf_counter()
+                    faces = face_proc.process_many(frame_gpu, [heads[k] for k in with_head], frame_w, frame_h,
+                                                   config.mirror)
+                    faces_by_person = dict(zip(with_head, zip(faces, face_proc.last_logits)))
+                    stage_ms['face'] += (time.perf_counter() - t) * 1000
+                    counts['faces_run'] += len(with_head)
+            for k, ((track, body_bbox), head_bbox) in enumerate(zip(people, heads)):
                 person_id = track.id
                 still = track.is_still()
                 face = face_logit = body = None
 
-                if face_proc and head_bbox is not None:
-                    t = time.perf_counter()
-                    face = face_proc.process(frame_gpu, head_bbox, frame_w, frame_h, config.mirror)
-                    face_logit = face_proc.last_logit  # also for rejected faces, in [TRACK] lines
-                    stage_ms['face'] += (time.perf_counter() - t) * 1000
-                    counts['faces_run'] += 1
+                if k in faces_by_person:
+                    face, face_logit = faces_by_person[k]  # logit also for rejected faces, in [TRACK] lines
                     if face is not None:
                         face.person_id = person_id
                         all_face_results.append(face)
