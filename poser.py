@@ -1,7 +1,9 @@
 import sys
 import json
 import math
+import queue
 import signal
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -198,6 +200,45 @@ def _is_quit_key(key: int) -> bool:
     return key != -1 and (key & 0xFF) in QUIT_KEYS
 
 
+def _run_pipelined(produce, consume) -> None:
+    """--pipeline: run produce() in a worker thread and consume() its results here, one frame apart, so the next
+    frame's models run while this one is drawn. consume returns False to stop. An error in produce is raised here.
+    The display stays in this (the main) thread; GTK windows must be used from one thread."""
+    results: queue.Queue = queue.Queue(maxsize=1)
+    stop = threading.Event()
+
+    def put(item) -> None:
+        while not stop.is_set():
+            try:
+                results.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                pass
+
+    def worker() -> None:
+        try:
+            while not stop.is_set():
+                put((True, produce()))
+        except BaseException as e:  # noqa: BLE001 - handed to the main thread
+            put((False, e))
+
+    thread = threading.Thread(target=worker, name='poser-infer', daemon=True)
+    thread.start()
+    try:
+        while True:
+            try:
+                ok, item = results.get(timeout=0.5)  # with a timeout so Ctrl+C / SIGTERM are handled
+            except queue.Empty:
+                continue
+            if not ok:
+                raise item
+            if not consume(item):
+                return
+    finally:
+        stop.set()
+        thread.join(timeout=2)
+
+
 def main():
     config = parse_args()
     models_dir = Path(__file__).parent / 'models'
@@ -291,191 +332,215 @@ def main():
     signal.signal(signal.SIGTERM, _raise_terminated)
     exit_code = 0
 
-    try:
-        while True:
-            frame_no += 1
+    def infer():
+        """Capture a frame and run the models, tracking and smoothing on it."""
+        nonlocal frame_no, body_rois, hand_rois, held_faces, last_report
+        frame_no += 1
+        t = time.perf_counter()
+        frame_gpu = capture.read_frame()
+        t_frame = time.monotonic()
+        frame_w, frame_h = frame_gpu.size()
+        stage_ms['capture'] += (time.perf_counter() - t) * 1000
+
+        all_face_results: List[FaceResult] = []
+        all_hand_results: List[HandResult] = []
+        all_body_results: List[BodyResult] = []
+        detections = None
+        track_ids: List[int] = []
+        id_labels = []  # (track id, body box) for --show-ids
+
+        if person_proc:
             t = time.perf_counter()
-            frame_gpu = capture.read_frame()
-            t_frame = time.monotonic()
-            frame_w, frame_h = frame_gpu.size()
-            stage_ms['capture'] += (time.perf_counter() - t) * 1000
+            detections = person_proc.process(frame_gpu, frame_w, frame_h)
+            detections.body_boxes = _drop_nested_bodies(detections.body_boxes, detections.head_boxes)
+            stage_ms['person'] += (time.perf_counter() - t) * 1000
+            counts['bodies'] += len(detections.body_boxes)
+            counts['heads'] += len(detections.head_boxes)
+            counts['hands'] += len(detections.hand_boxes)
 
-            all_face_results: List[FaceResult] = []
-            all_hand_results: List[HandResult] = []
-            all_body_results: List[BodyResult] = []
-            detections = None
-            track_ids: List[int] = []
-            id_labels = []  # (track id, body box) for --show-ids
+            # Stable per-person IDs (and so colours) across frames (issue #6).
+            # Only confirmed tracks (seen in a few frames) are processed and drawn, oldest first, so a
+            # flickering false positive gets no skeleton and can't take a real person's head or hands.
+            tracks = tracker.update_tracks(detections.body_boxes)
+            track_ids = [tr.id for tr in tracks]
+            live_ids = {tr.id for tr in tracker.tracks}
+            body_rois = {k: v for k, v in body_rois.items() if k in live_ids}
+            hand_rois = {k: v for k, v in hand_rois.items() if k in live_ids}
+            for line in tracker.events:
+                print(line, flush=True)
+            tracker.events.clear()
+            held_faces = {k: v for k, v in held_faces.items() if frame_no - v[2] <= FACE_HOLD_FRAMES}
+            # --drop-still (issue #7): a track that hasn't moved for ~10 s is a prop (or someone very
+            # still); it gets no head, hands, or face and body models.
+            confirmed = [(tr, box) for tr, box in zip(tracks, detections.body_boxes) if tr.confirmed]
+            people = sorted(((tr, box) for tr, box in confirmed if not (config.drop_still and tr.is_still())),
+                            key=lambda p: (-p[0].age, p[0].id))
+            counts['still'] += len(confirmed) - len(people)
+            heads = _assign_heads([box for _, box in people], detections.head_boxes)
+            counts['people'] += len(people)
+            for (track, body_bbox), head_bbox in zip(people, heads):
+                person_id = track.id
+                still = track.is_still()
+                face = face_logit = body = None
 
-            if person_proc:
-                t = time.perf_counter()
-                detections = person_proc.process(frame_gpu, frame_w, frame_h)
-                detections.body_boxes = _drop_nested_bodies(detections.body_boxes, detections.head_boxes)
-                stage_ms['person'] += (time.perf_counter() - t) * 1000
-                counts['bodies'] += len(detections.body_boxes)
-                counts['heads'] += len(detections.head_boxes)
-                counts['hands'] += len(detections.hand_boxes)
+                if face_proc and head_bbox is not None:
+                    t = time.perf_counter()
+                    face = face_proc.process(frame_gpu, head_bbox, frame_w, frame_h, config.mirror)
+                    face_logit = face_proc.last_logit  # also for rejected faces, in [TRACK] lines
+                    stage_ms['face'] += (time.perf_counter() - t) * 1000
+                    counts['faces_run'] += 1
+                    if face is not None:
+                        face.person_id = person_id
+                        all_face_results.append(face)
+                        face_logit = math.log(face.presence / max(1e-12, 1 - face.presence))
+                        face_logits.append(face_logit)
+                        if face.presence >= FACE_VERIFY_PRESENCE:
+                            track.face_hits += 1
 
-                # Stable per-person IDs (and so colours) across frames (issue #6).
-                # Only confirmed tracks (seen in a few frames) are processed and drawn, oldest first, so a
-                # flickering false positive gets no skeleton and can't take a real person's head or hands.
-                tracks = tracker.update_tracks(detections.body_boxes)
-                track_ids = [tr.id for tr in tracks]
-                live_ids = {tr.id for tr in tracker.tracks}
-                body_rois = {k: v for k, v in body_rois.items() if k in live_ids}
-                hand_rois = {k: v for k, v in hand_rois.items() if k in live_ids}
-                for line in tracker.events:
-                    print(line, flush=True)
-                tracker.events.clear()
-                held_faces = {k: v for k, v in held_faces.items() if frame_no - v[2] <= FACE_HOLD_FRAMES}
-                # --drop-still (issue #7): a track that hasn't moved for ~10 s is a prop (or someone very
-                # still); it gets no head, hands, or face and body models.
-                confirmed = [(tr, box) for tr, box in zip(tracks, detections.body_boxes) if tr.confirmed]
-                people = sorted(((tr, box) for tr, box in confirmed if not (config.drop_still and tr.is_still())),
-                                key=lambda p: (-p[0].age, p[0].id))
-                counts['still'] += len(confirmed) - len(people)
-                heads = _assign_heads([box for _, box in people], detections.head_boxes)
-                counts['people'] += len(people)
-                for (track, body_bbox), head_bbox in zip(people, heads):
-                    person_id = track.id
-                    still = track.is_still()
-                    face = face_logit = body = None
+                if config.face_hold and head_bbox is not None:
+                    if face is not None:
+                        held_faces[person_id] = (face, head_bbox, frame_no)
+                    elif (held := _held_face(held_faces, person_id, head_bbox, frame_no)) is not None:
+                        all_face_results.append(held)
+                        counts['faces_held'] += 1
 
-                    if face_proc and head_bbox is not None:
-                        t = time.perf_counter()
-                        face = face_proc.process(frame_gpu, head_bbox, frame_w, frame_h, config.mirror)
-                        face_logit = face_proc.last_logit  # also for rejected faces, in [TRACK] lines
-                        stage_ms['face'] += (time.perf_counter() - t) * 1000
-                        counts['faces_run'] += 1
-                        if face is not None:
-                            face.person_id = person_id
-                            all_face_results.append(face)
-                            face_logit = math.log(face.presence / max(1e-12, 1 - face.presence))
-                            face_logits.append(face_logit)
-                            if face.presence >= FACE_VERIFY_PRESENCE:
-                                track.face_hits += 1
-
-                    if config.face_hold and head_bbox is not None:
-                        if face is not None:
-                            held_faces[person_id] = (face, head_bbox, frame_no)
-                        elif (held := _held_face(held_faces, person_id, head_bbox, frame_no)) is not None:
-                            all_face_results.append(held)
-                            counts['faces_held'] += 1
-
-                    # A body is only drawn once the face model has clearly seen a real face in its own head box
-                    # in a few frames. The lamp and other static false positives never show one (issue #3).
-                    if require_face and track.face_hits < FACE_VERIFY_HITS:
-                        if track_stats:
-                            track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, None,
-                                               still=still)
-                        continue
-                    counts['drawn'] += 1
-                    id_labels.append((person_id, body_bbox))
-
-                    if body_proc:
-                        t = time.perf_counter()
-                        body = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror,
-                                                 roi=body_rois.get(person_id))
-                        body_rois[person_id] = body.roi if body is not None else None
-                        stage_ms['body'] += (time.perf_counter() - t) * 1000
-                        if body is not None:
-                            body.person_id = person_id
-                            all_body_results.append(body)
-
-                    # Hands are cropped from the pose's wrists (or the hand's last landmarks), so they need the body.
-                    if hand_proc and body is not None:
-                        t = time.perf_counter()
-                        hands = hand_proc.process(frame_gpu, body.landmarks, hand_rois.get(person_id, (None, None)))
-                        hand_rois[person_id] = tuple(h.roi if h is not None else None for h in hands)
-                        for hand in hands:
-                            if hand is not None:
-                                hand.person_id = person_id
-                                all_hand_results.append(hand)
-                        stage_ms['hands'] += (time.perf_counter() - t) * 1000
-                        counts['hands_found'] += sum(h is not None for h in hands)
-
+                # A body is only drawn once the face model has clearly seen a real face in its own head box
+                # in a few frames. The lamp and other static false positives never show one (issue #3).
+                if require_face and track.face_hits < FACE_VERIFY_HITS:
                     if track_stats:
-                        track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, body,
+                        track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, None,
                                            still=still)
+                    continue
+                counts['drawn'] += 1
+                id_labels.append((person_id, body_bbox))
 
-                if track_stats and time.monotonic() - last_report >= config.track_report:
-                    last_report = time.monotonic()
-                    for line in track_stats.report({t.id for t in tracker.tracks + tracker.lost}):
-                        print(line, flush=True)
+                if body_proc:
+                    t = time.perf_counter()
+                    body = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror,
+                                             roi=body_rois.get(person_id))
+                    body_rois[person_id] = body.roi if body is not None else None
+                    stage_ms['body'] += (time.perf_counter() - t) * 1000
+                    if body is not None:
+                        body.person_id = person_id
+                        all_body_results.append(body)
 
-            if smoother:
-                t = time.perf_counter()
-                smoother.smooth(all_face_results, all_hand_results, all_body_results, t_frame)
-                stage_ms['smooth'] += (time.perf_counter() - t) * 1000
+                # Hands are cropped from the pose's wrists (or the hand's last landmarks), so they need the body.
+                if hand_proc and body is not None:
+                    t = time.perf_counter()
+                    hands = hand_proc.process(frame_gpu, body.landmarks, hand_rois.get(person_id, (None, None)))
+                    hand_rois[person_id] = tuple(h.roi if h is not None else None for h in hands)
+                    for hand in hands:
+                        if hand is not None:
+                            hand.person_id = person_id
+                            all_hand_results.append(hand)
+                    stage_ms['hands'] += (time.perf_counter() - t) * 1000
+                    counts['hands_found'] += sum(h is not None for h in hands)
 
-            # Timing for the final stage: GPU download, drawing, imshow, and waitKey.
-            t_render = time.perf_counter()
-            # Scale to display size on the GPU before the single GPU→CPU download, so lines/points are drawn
-            # at native resolution without a CPU resize.
-            if black_frame is not None:
-                black_frame.fill(0)
-                cpu_frame = black_frame
-                cs_x = display_w / frame_w
-                cs_y = display_h / frame_h
-            elif scale_display:
-                # Use the returned GpuMat: on the Orin's OpenCV build the dst argument is not written in place.
-                display_gpu = cv2.cuda.resize(frame_gpu, (display_w, display_h), display_gpu)
-                cpu_frame = display_gpu.download()
-                cs_x = display_w / frame_w
-                cs_y = display_h / frame_h
-            else:
-                cpu_frame = frame_gpu.download()
-                cs_x = cs_y = 1.0
-            if picture is not None and cpu_frame is not picture:
-                picture[:] = cpu_frame
-                cpu_frame = picture
+                if track_stats:
+                    track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, body,
+                                       still=still)
 
-            dump_now = dump_dir and time.monotonic() - last_dump >= config.dump_every
-            if dump_now:
-                cv2.imwrite(str(dump_dir / f'frame_{dump_n + 1:04d}_raw.jpg'), cpu_frame)
+            if track_stats and time.monotonic() - last_report >= config.track_report:
+                last_report = time.monotonic()
+                for line in track_stats.report({t.id for t in tracker.tracks + tracker.lost}):
+                    print(line, flush=True)
 
-            renderer.draw_faces(cpu_frame, all_face_results, display_w, display_h, cs_x, cs_y)
-            renderer.draw_hands(cpu_frame, all_hand_results, display_w, display_h, cs_x, cs_y)
-            renderer.draw_body(cpu_frame, all_body_results, display_w, display_h, cs_x, cs_y)
-            if config.show_ids:
-                renderer.draw_ids(cpu_frame, id_labels, cs_x, cs_y)
+        if smoother:
+            t = time.perf_counter()
+            smoother.smooth(all_face_results, all_hand_results, all_body_results, t_frame)
+            stage_ms['smooth'] += (time.perf_counter() - t) * 1000
 
-            if dump_now:
-                dump_n += 1
-                last_dump = time.monotonic()
-                _dump_frame(dump_dir, dump_n, cpu_frame, detections, all_face_results, all_hand_results, all_body_results, cs_x, cs_y,
-                            track_ids)
+        if black_frame is not None:
+            frame_gpu = None            # not drawn
+        elif config.pipeline:
+            frame_gpu = frame_gpu.clone()  # read_frame() reuses its buffer for the next frame
+        return (frame_gpu, frame_w, frame_h, all_face_results, all_hand_results, all_body_results, id_labels,
+                detections, track_ids)
 
-            fps_counter.tick()
-            if config.show_fps:
-                renderer.draw_fps(cpu_frame, fps_counter.get_fps())
-                fps_counter._print_counter = getattr(fps_counter, "_print_counter", 0) + 1
-                if fps_counter._print_counter % 60 == 0:
-                    print(f"[FPS] {fps_counter.get_fps():.1f}", flush=True)
+    def render(out) -> bool:
+        """Draw and show one frame's results; False when the quit key was pressed."""
+        nonlocal display_gpu, dump_n, last_dump
+        (frame_gpu, frame_w, frame_h, all_face_results, all_hand_results, all_body_results, id_labels,
+         detections, track_ids) = out
+        # Timing for the final stage: GPU download, drawing, imshow, and waitKey.
+        t_render = time.perf_counter()
+        # Scale to display size on the GPU before the single GPU→CPU download, so lines/points are drawn
+        # at native resolution without a CPU resize.
+        if black_frame is not None:
+            black_frame.fill(0)
+            cpu_frame = black_frame
+            cs_x = display_w / frame_w
+            cs_y = display_h / frame_h
+        elif scale_display:
+            # Use the returned GpuMat: on the Orin's OpenCV build the dst argument is not written in place.
+            display_gpu = cv2.cuda.resize(frame_gpu, (display_w, display_h), display_gpu)
+            cpu_frame = display_gpu.download()
+            cs_x = display_w / frame_w
+            cs_y = display_h / frame_h
+        else:
+            cpu_frame = frame_gpu.download()
+            cs_x = cs_y = 1.0
+        if picture is not None and cpu_frame is not picture:
+            picture[:] = cpu_frame
+            cpu_frame = picture
 
-            cv2.imshow(WINDOW_NAME, canvas if canvas is not None else cpu_frame)
+        dump_now = dump_dir and time.monotonic() - last_dump >= config.dump_every
+        if dump_now:
+            cv2.imwrite(str(dump_dir / f'frame_{dump_n + 1:04d}_raw.jpg'), cpu_frame)
 
-            if _is_quit_key(cv2.waitKey(1)):
-                print('[EXIT] quit key pressed', flush=True)
-                break
+        renderer.draw_faces(cpu_frame, all_face_results, display_w, display_h, cs_x, cs_y)
+        renderer.draw_hands(cpu_frame, all_hand_results, display_w, display_h, cs_x, cs_y)
+        renderer.draw_body(cpu_frame, all_body_results, display_w, display_h, cs_x, cs_y)
+        if config.show_ids:
+            renderer.draw_ids(cpu_frame, id_labels, cs_x, cs_y)
 
-            stage_ms['render'] += (time.perf_counter() - t_render) * 1000
+        if dump_now:
+            dump_n += 1
+            last_dump = time.monotonic()
+            _dump_frame(dump_dir, dump_n, cpu_frame, detections, all_face_results, all_hand_results, all_body_results, cs_x, cs_y,
+                        track_ids)
 
-            # Log 60-frame averages and execution provider info (TensorRT vs CUDA fallback), then reset accumulators.
-            if config.show_fps and fps_counter._print_counter % 60 == 0:
-                n = 60
-                print('[STAGES ms/frame] ' + ' '.join(f'{k}={v / n:.1f}' for k, v in stage_ms.items())
-                      + ' | per frame: ' + ' '.join(f'{k}={v / n:.2f}' for k, v in counts.items()), flush=True)
-                if fps_counter._print_counter == 60:
-                    for name, sess in model_manager._sessions.items():
-                        print(f'[PROVIDERS] {name}: {sess.get_providers()}', flush=True)
-                if face_logits:
-                    fl = sorted(face_logits)
-                    print(f'[FACES] logit min={fl[0]:.1f} median={fl[len(fl) // 2]:.1f} max={fl[-1]:.1f} n={len(fl)}',
-                          flush=True)
-                face_logits.clear()
-                stage_ms = dict.fromkeys(stage_ms, 0.0)
-                counts = dict.fromkeys(counts, 0)
+        fps_counter.tick()
+        if config.show_fps:
+            renderer.draw_fps(cpu_frame, fps_counter.get_fps())
+            fps_counter._print_counter = getattr(fps_counter, "_print_counter", 0) + 1
+            if fps_counter._print_counter % 60 == 0:
+                print(f"[FPS] {fps_counter.get_fps():.1f}", flush=True)
+
+        cv2.imshow(WINDOW_NAME, canvas if canvas is not None else cpu_frame)
+
+        if _is_quit_key(cv2.waitKey(1)):
+            print('[EXIT] quit key pressed', flush=True)
+            return False
+
+        stage_ms['render'] += (time.perf_counter() - t_render) * 1000
+
+        # Log 60-frame averages and execution provider info (TensorRT vs CUDA fallback), then reset accumulators.
+        if config.show_fps and fps_counter._print_counter % 60 == 0:
+            n = 60
+            print('[STAGES ms/frame] ' + ' '.join(f'{k}={v / n:.1f}' for k, v in stage_ms.items())
+                  + ' | per frame: ' + ' '.join(f'{k}={v / n:.2f}' for k, v in counts.items()), flush=True)
+            if fps_counter._print_counter == 60:
+                for name, sess in model_manager._sessions.items():
+                    print(f'[PROVIDERS] {name}: {sess.get_providers()}', flush=True)
+            if face_logits:
+                fl = sorted(face_logits)
+                print(f'[FACES] logit min={fl[0]:.1f} median={fl[len(fl) // 2]:.1f} max={fl[-1]:.1f} n={len(fl)}',
+                      flush=True)
+            face_logits.clear()
+            # Cleared in place: with --pipeline the worker thread adds to these dicts.
+            for k in stage_ms:
+                stage_ms[k] = 0.0
+            for k in counts:
+                counts[k] = 0
+        return True
+
+    try:
+        if config.pipeline:
+            _run_pipelined(infer, render)
+        else:
+            while render(infer()):
+                pass
     except KeyboardInterrupt:
         print('[EXIT] interrupted', flush=True)
     except _Terminated:

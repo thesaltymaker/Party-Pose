@@ -25,6 +25,7 @@ class Config:
     drop_still: bool = False    # don't draw tracks that haven't moved for ~10 s (props; issue #7)
     face_hold: bool = False     # keep drawing the last good face for a few frames when the face model misses
     smooth: bool = True         # smooth landmarks across frames (--no-smooth for A/B tests)
+    pipeline: bool = False      # run the next frame's models while this frame is drawn (one frame later on screen)
     skelly: bool = False        # filled bone-coloured face with eyes, nose and mouth cut out
     santa_hat: bool = False     # Santa hat on each face
 
@@ -71,6 +72,9 @@ def parse_args() -> Config:
     parser.add_argument("--face-hold", action="store_true",
                         help="When the face model misses a frame, keep drawing the person's last face "
                              "(moved with their head) for up to ~0.3 s")
+    parser.add_argument("--pipeline", action="store_true",
+                        help="Run the next frame's models in a worker thread while this frame is drawn "
+                             "(faster; picture one frame later)")
     parser.add_argument("--no-smooth", dest="smooth", action="store_false",
                         help="Don't smooth landmarks across frames (for A/B comparison)")
     parser.add_argument("--skelly", action="store_true", help="Filled skeleton face (eyes, nose and mouth cut out)")
@@ -114,6 +118,7 @@ def parse_args() -> Config:
         drop_still=args.drop_still,
         face_hold=args.face_hold,
         smooth=args.smooth,
+        pipeline=args.pipeline,
         skelly=args.skelly,
         santa_hat=args.santa_hat,
     )

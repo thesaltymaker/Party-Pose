@@ -74,3 +74,11 @@ def test_smoothing_is_on_unless_no_smooth():
         assert parse_args().smooth is True
     with patch("sys.argv", ["poser.py", "--no-smooth"]):
         assert parse_args().smooth is False
+
+
+def test_pipeline_is_off_unless_asked():
+    from src.config import parse_args
+    with patch("sys.argv", ["poser.py"]):
+        assert parse_args().pipeline is False
+    with patch("sys.argv", ["poser.py", "--pipeline"]):
+        assert parse_args().pipeline is True
