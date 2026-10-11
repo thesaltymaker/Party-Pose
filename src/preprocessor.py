@@ -6,6 +6,10 @@ import numpy as np
 from typing import List, Tuple
 from src.types import BoundingBox, Landmark
 
+# crop_rotated_nhwc buffers per crop size: [warped GpuMat, RGB GpuMat, downloaded uint8, float32 output]
+_CROP_BUFS: dict = {}
+
+
 class Preprocessor:
     """Stateless preprocessor for GPU-resident pose detection pipeline."""
 
@@ -136,11 +140,26 @@ class Preprocessor:
     @staticmethod
     def crop_rotated_nhwc(frame_gpu: cv2.cuda_GpuMat, M: np.ndarray, target: int) -> np.ndarray:
         """Crop the ROI given by `roi_affine` into a [1, target, target, 3] RGB float array in [0, 1].
-        Outside the frame is black, as in MediaPipe."""
-        warped = cv2.cuda.warpAffine(frame_gpu, cv2.invertAffineTransform(M), (target, target),
-                                     flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
-        rgb = cv2.cuda.cvtColor(warped, cv2.COLOR_BGR2RGB).download()
-        return np.expand_dims(rgb.astype(np.float32) / 255.0, axis=0)
+        Outside the frame is black, as in MediaPipe.
+
+        The GPU images, the downloaded image and the returned array are reused for every crop of this size
+        (allocating them per call was about half the crop time on the Orin), so the array is only valid until
+        the next crop of the same size; the models read it straight away. Call from one thread.
+        """
+        bufs = _CROP_BUFS.get(target)
+        if bufs is None:
+            bufs = _CROP_BUFS[target] = [cv2.cuda_GpuMat(target, target, cv2.CV_8UC3),
+                                         cv2.cuda_GpuMat(target, target, cv2.CV_8UC3),
+                                         np.empty((target, target, 3), np.uint8),
+                                         np.empty((1, target, target, 3), np.float32)]
+        warp, rgb, host, out = bufs
+        # Use the returned GpuMats: on the Orin's OpenCV build dst is not always written in place.
+        warp = bufs[0] = cv2.cuda.warpAffine(frame_gpu, cv2.invertAffineTransform(M), (target, target), warp,
+                                             flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        rgb = bufs[1] = cv2.cuda.cvtColor(warp, cv2.COLOR_BGR2RGB, rgb)
+        host = bufs[2] = rgb.download(host)
+        np.multiply(host, np.float32(1 / 255), out=out[0], casting='unsafe')
+        return out
 
     @staticmethod
     def to_image_space_affine(lms_model: np.ndarray, M: np.ndarray) -> List[Landmark]:
