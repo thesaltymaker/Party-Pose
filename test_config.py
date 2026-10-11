@@ -66,3 +66,11 @@ def test_detect_platform_return_values(machine, model_content, expected):
             result = detect_platform()
             assert isinstance(result, str)
             assert result in {"orin", "laptop"}
+
+
+def test_smoothing_is_on_unless_no_smooth():
+    from src.config import parse_args
+    with patch("sys.argv", ["poser.py"]):
+        assert parse_args().smooth is True
+    with patch("sys.argv", ["poser.py", "--no-smooth"]):
+        assert parse_args().smooth is False

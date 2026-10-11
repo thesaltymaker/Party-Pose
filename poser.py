@@ -17,6 +17,7 @@ from src.body_processor import BodyProcessor
 from src.renderer import Renderer
 from src.fps_counter import FPSCounter
 from src.tracker import PersonTracker
+from src.smoothing import PoseSmoother
 from src.track_stats import TrackStats
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult, Landmark
 
@@ -240,6 +241,7 @@ def main():
     body_proc   = BodyProcessor(model_manager) if config.body else None
 
     tracker     = PersonTracker()
+    smoother    = PoseSmoother() if config.smooth else None  # steadies body crops and landmarks per person
     track_stats = TrackStats() if config.track_report > 0 else None
     last_report = time.monotonic()
     require_face = config.require_face and face_proc is not None
@@ -264,9 +266,9 @@ def main():
     # --black-bg shows none of the camera image, so draw on this instead of resizing and downloading the frame.
     black_frame = np.zeros((display_h, display_w, 3), np.uint8) if config.black_bg else None
 
-    # Accumulated ms per stage (capture, person, face, hands, body, render); printed as 60-frame averages with --fps.
+    # Accumulated ms per stage (capture, person, face, hands, body, smooth, render); printed as 60-frame averages with --fps.
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
-    stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'render')}
+    stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'smooth', 'render')}
     counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'faces_held',
                              'hands_run')}
     held_faces = {}  # track id -> (last good FaceResult, its head box, frame number), for --face-hold
@@ -291,6 +293,7 @@ def main():
             frame_no += 1
             t = time.perf_counter()
             frame_gpu = capture.read_frame()
+            t_frame = time.monotonic()
             frame_w, frame_h = frame_gpu.size()
             stage_ms['capture'] += (time.perf_counter() - t) * 1000
 
@@ -315,6 +318,9 @@ def main():
                 # flickering false positive gets no skeleton and can't take a real person's head or hands.
                 tracks = tracker.update_tracks(detections.body_boxes)
                 track_ids = [tr.id for tr in tracks]
+                for line in tracker.events:
+                    print(line, flush=True)
+                tracker.events.clear()
                 held_faces = {k: v for k, v in held_faces.items() if frame_no - v[2] <= FACE_HOLD_FRAMES}
                 # --drop-still (issue #7): a track that hasn't moved for ~10 s is a prop (or someone very
                 # still); it gets no head, hands, or face and body models.
@@ -372,7 +378,8 @@ def main():
 
                     if body_proc:
                         t = time.perf_counter()
-                        body = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror)
+                        crop = smoother.crop(person_id, body_bbox, t_frame) if smoother else body_bbox
+                        body = body_proc.process(frame_gpu, crop, frame_w, frame_h, config.mirror)
                         stage_ms['body'] += (time.perf_counter() - t) * 1000
                         if body is not None:
                             body.person_id = person_id
@@ -386,6 +393,11 @@ def main():
                     last_report = time.monotonic()
                     for line in track_stats.report({t.id for t in tracker.tracks + tracker.lost}):
                         print(line, flush=True)
+
+            if smoother:
+                t = time.perf_counter()
+                smoother.smooth(all_face_results, all_hand_results, all_body_results, t_frame)
+                stage_ms['smooth'] += (time.perf_counter() - t) * 1000
 
             # Timing for the final stage: GPU download, drawing, imshow, and waitKey.
             t_render = time.perf_counter()

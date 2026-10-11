@@ -16,7 +16,11 @@ A confirmed track that expires is kept as "lost" for `max_lost` frames. A new bo
 lost track back, with its ID, colour and movement history, instead of a new ID. A far person with a weak detector
 score otherwise got a new ID every few seconds. "Same spot" is measured as the share of the smaller box that
 lies inside the other (>= `revive_overlap`), not IoU: that person's box also flips between a small and a big
-box (IoU 0.25).
+box (IoU 0.25). A dancer missed for more than `max_missed` frames has often moved off their last box, so a box
+whose centre is within `revive_dist` box heights of the last box, at a similar size (0.4-2.5x: the far person's
+box flipped 2.1x), also gets the track back.
+When a new ID is confirmed, a `[NEW-ID]` line in `events` says which old track was nearest and how far, so a
+live run shows why a person got a new ID.
 
 Still tracks (`--drop-still`, issue #7): props (a lamp, a bar stool, a chair) are detected as people, and no
 per-frame score separates them from people (issue #3), and they move when the unit is moved. Over ~10 s a
@@ -71,6 +75,11 @@ def _centre(b: BoundingBox) -> Tuple[float, float]:
     return b.x + b.w / 2, b.y + b.h / 2
 
 
+def _dist_and_ratio(last: BoundingBox, box: BoundingBox) -> Tuple[float, float]:
+    """Centre distance in heights of the bigger box, and box height / last-box height."""
+    return math.dist(_centre(last), _centre(box)) / max(last.h, box.h, 1.0), box.h / max(last.h, 1.0)
+
+
 @dataclass
 class Track:
     id: int
@@ -82,6 +91,7 @@ class Track:
     hits: int = 1            # frames in which the track was matched
     confirmed: bool = False  # matched in at least min_hits frames; stays True until the track expires
     face_hits: int = 0       # frames in which the app's face model clearly found a face in this track's head box
+    note: Optional[str] = None  # [NEW-ID] line printed when this new track is confirmed
     history: Deque[Tuple[float, float]] = field(default_factory=lambda: deque(maxlen=300))
     recent: Deque[Tuple[float, float, float]] = field(default_factory=lambda: deque(maxlen=STILL_FRAMES))
 
@@ -101,13 +111,15 @@ class PersonTracker:
 
     def __init__(self, max_missed: int = 15, min_iou: float = 0.2, max_centre_dist: float = 0.6,
                  velocity_smoothing: float = 0.5, min_hits: int = 3, max_lost: int = 150,
-                 revive_overlap: float = 0.5) -> None:
+                 revive_overlap: float = 0.5, revive_dist: float = 1.0) -> None:
         """
         min_hits: frames a track must be matched in before it is confirmed (drawn).
         max_missed: frames a track survives without a match (15 = 0.5 s at 30 FPS).
         max_lost: frames since last seen that an expired confirmed track can still be revived (150 = 5 s).
         revive_overlap: minimum share of the smaller of (new box, lost track's last box) inside the other,
             to revive the lost track.
+        revive_dist: also revive when the centres are within this many box heights (the bigger of the two)
+            and the new box is 0.4-2.5x the last box's height.
         min_iou: minimum overlap between a box and a track's predicted box to match.
         max_centre_dist: fallback match when boxes don't overlap enough: centre distance, as a fraction
             of the track box's diagonal.
@@ -120,6 +132,8 @@ class PersonTracker:
         self.min_hits = min_hits
         self.max_lost = max_lost
         self.revive_overlap = revive_overlap
+        self.revive_dist = revive_dist
+        self.events: List[str] = []  # [NEW-ID] lines; the caller prints and clears them
         self.tracks: List[Track] = []
         self.lost: List[Track] = []  # expired confirmed tracks that a box in the same spot can revive
         self._next_id = 0
@@ -182,12 +196,10 @@ class PersonTracker:
         self.lost += [t for t in self.tracks if t.missed > self.max_missed and t.confirmed]
         self.tracks = [t for t in self.tracks if t.missed <= self.max_missed]
 
-        revive = sorted(((overlap_of_smaller(t.box, box), li, bi) for li, t in enumerate(self.lost)
-                         for bi, box in enumerate(boxes) if out[bi] is None), reverse=True)
+        revive = sorted(((score, li, bi) for li, t in enumerate(self.lost) for bi, box in enumerate(boxes)
+                         if out[bi] is None and (score := self._revive_score(t.box, box)) is not None), reverse=True)
         revived = set()
-        for overlap, li, bi in revive:
-            if overlap < self.revive_overlap:
-                break
+        for _, li, bi in revive:
             if li in revived or out[bi] is not None:
                 continue
             revived.add(li)
@@ -201,7 +213,8 @@ class PersonTracker:
 
         for bi, box in enumerate(boxes):
             if out[bi] is None:
-                track = Track(id=self._next_id, box=box, confirmed=self.min_hits <= 1)
+                track = Track(id=self._next_id, box=box, confirmed=self.min_hits <= 1,
+                              note=self._nearest_note(self._next_id, box))
                 track.history.append(_centre(box))
                 track.recent.append((*_centre(box), box.h))
                 self._next_id += 1
@@ -209,6 +222,26 @@ class PersonTracker:
                 out[bi] = track
 
         return out  # type: ignore[return-value]
+
+    def _revive_score(self, last: BoundingBox, box: BoundingBox) -> Optional[float]:
+        """Higher is better; None if the box can't be the lost track. Overlap scores in [1.5, 2], distance in (0, 1]."""
+        overlap = overlap_of_smaller(last, box)
+        if overlap >= self.revive_overlap:
+            return 1.0 + overlap
+        dist, ratio = _dist_and_ratio(last, box)
+        if dist <= self.revive_dist and 0.4 <= ratio <= 2.5:
+            return 1.0 - dist / self.revive_dist * 0.999
+        return None
+
+    def _nearest_note(self, new_id: int, box: BoundingBox) -> str:
+        others = [t for t in self.tracks + self.lost if t.confirmed]
+        if not others:
+            return f'[NEW-ID] #{new_id} nearest none'
+        near = min(others, key=lambda t: _dist_and_ratio(t.box, box)[0])
+        dist, ratio = _dist_and_ratio(near.box, box)
+        return (f'[NEW-ID] #{new_id} nearest #{near.id} {"lost" if near in self.lost else "live"} '
+                f'missed={near.missed} dist={dist:.2f}h size=x{ratio:.2f} '
+                f'overlap={overlap_of_smaller(near.box, box):.2f}')
 
     def _advance(self, track: Track, box: BoundingBox) -> None:
         (ox, oy), (nx, ny) = _centre(track.box), _centre(box)
@@ -222,5 +255,8 @@ class PersonTracker:
         track.hits += 1
         if track.hits >= self.min_hits:
             track.confirmed = True
+            if track.note:
+                self.events.append(track.note)
+                track.note = None
         track.history.append((nx, ny))
         track.recent.append((nx, ny, box.h))

@@ -208,3 +208,43 @@ def test_still_person_who_starts_moving_is_shown_again_within_about_a_second():
     for f in range(40):
         [tr] = t.update_tracks([_box(900 + 3 * f)])
     assert not tr.is_still()
+
+
+def test_dancer_missed_for_a_second_keeps_their_id_after_moving():
+    # Dancing: the detector drops a dancer for longer than max_missed while they move sideways, so the box they
+    # come back with no longer overlaps their last box.
+    t = PersonTracker()
+    tr = _confirmed(t, _box(500))
+    for _ in range(25):
+        t.update([])
+    assert t.update([_box(750)]) == [tr.id]  # half a box height away
+
+
+def test_lost_track_is_not_revived_by_a_much_smaller_box_nearby():
+    t = PersonTracker(max_missed=2, max_lost=150)
+    tr = _confirmed(t, _box(500))
+    for _ in range(5):
+        t.update([])
+    assert t.update([_box(800, w=60, h=150)]) != [tr.id]
+
+
+def test_new_id_is_logged_with_the_nearest_old_track():
+    t = PersonTracker(max_missed=2, max_lost=150)
+    tr = _confirmed(t, _box(500))
+    for _ in range(5):
+        t.update([])
+    t.events.clear()
+    for _ in range(3):
+        [new] = t.update([_box(1600)])
+    assert new != tr.id
+    assert len(t.events) == 1
+    assert t.events[0].startswith(f'[NEW-ID] #{new} ') and f'nearest #{tr.id}' in t.events[0]
+
+
+def test_lost_person_whose_box_flips_size_while_moving_keeps_their_id():
+    # The Orin flip (117x239 <-> 220x510, x2.1) together with sideways movement while missed.
+    t = PersonTracker()
+    tr = _confirmed(t, BoundingBox(1540, 433, 117, 239, 0.4))
+    for _ in range(25):
+        t.update([])
+    assert t.update([BoundingBox(1212, 421, 220, 510, 0.4)]) == [tr.id]
