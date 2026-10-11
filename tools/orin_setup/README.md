@@ -63,7 +63,7 @@ What the service does on every start:
 
 The app needs a logged-in desktop. For it to come up at boot, turn on GDM auto-login (Settings > Users > Automatic Login). Without it the service waits until someone logs in.
 
-With `--fullscreen` the frame is scaled on the GPU to the monitor's resolution from `xrandr` (e.g. 2560x1440), keeping the aspect ratio; the Orin's OpenCV does not stretch images to fill a full-screen window. `--width/--height` override it. The log shows `[DISPLAY] screen ...`.
+With `--fullscreen` the monitor's resolution is read from `xrandr` at every start, so any TV or monitor works. The frame is scaled on the GPU to fit it, keeping the aspect ratio, and centred on a black screen-sized image; the area the picture doesn't cover (e.g. top and bottom of a 16:9 picture on a 1920x1200 monitor) is black (issue #12). The Orin's OpenCV does not stretch images to fill a full-screen window. `--width/--height` override it. The log shows `[DISPLAY] screen ...`.
 
 | Action | Result |
 |---|---|

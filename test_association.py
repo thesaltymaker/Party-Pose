@@ -134,3 +134,32 @@ def test_held_face_is_dropped_after_the_hold_time():
     assert _held_face(held, 7, head, 5 + FACE_HOLD_FRAMES) is not None
     assert _held_face(held, 7, head, 6 + FACE_HOLD_FRAMES) is None
     assert _held_face(held, 8, head, 6) is None              # another person gets nothing
+
+
+def test_picture_is_centred_on_a_black_screen_sized_canvas():
+    # Issue #12: a 16:9 picture on a 1920x1200 (16:10) monitor left a white band; the window must be screen-sized.
+    import numpy as np
+    from poser import _screen_canvas
+    canvas, view = _screen_canvas(1920, 1200, 1920, 1080)
+    assert canvas.shape == (1200, 1920, 3) and view.shape == (1080, 1920, 3)
+    view[:] = 255
+    assert not canvas[:60].any() and not canvas[1140:].any()   # 60 px black above and below
+    assert canvas[60:1140].all()
+
+
+def test_picture_on_a_portrait_screen_is_centred_vertically():
+    from poser import _fit, _screen_canvas
+    w, h = _fit(1920, 1080, 1080, 1920)
+    canvas, view = _screen_canvas(1080, 1920, w, h)
+    view[:] = 255
+    assert canvas.shape == (1920, 1080, 3) and (w, h) == (1080, 608)
+    top = (1920 - 608) // 2
+    assert not canvas[:top].any() and canvas[top:top + 608].all() and not canvas[top + 608:].any()
+
+
+def test_drawing_in_the_picture_area_does_not_reach_the_border():
+    import cv2
+    from poser import _screen_canvas
+    canvas, view = _screen_canvas(1920, 1200, 1920, 1080)
+    cv2.line(view, (0, 0), (1919, 1079), (255, 255, 255), 2)
+    assert canvas[60, 0].any() and not canvas[:60].any() and not canvas[1140:].any()

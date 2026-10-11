@@ -159,6 +159,18 @@ def _fit(src_w: int, src_h: int, max_w: int, max_h: int) -> tuple:
     return round(src_w * scale), round(src_h * scale)
 
 
+def _screen_canvas(screen_w: int, screen_h: int, w: int, h: int) -> tuple:
+    """A black screen-sized image and the centred w x h area of it the picture is drawn in (issue #12).
+
+    The full-screen window shows images unscaled from its top-left, and any part of the screen the image doesn't
+    cover shows the window background (white): a 16:9 picture on a 1920x1200 monitor left a band. The area is a
+    view, so drawing in it never reaches the border, which stays black.
+    """
+    canvas = np.zeros((screen_h, screen_w, 3), np.uint8)
+    x, y = (screen_w - w) // 2, (screen_h - h) // 2
+    return canvas, canvas[y:y + h, x:x + w]
+
+
 # With --require-face, a track counts as a person after FACE_VERIFY_HITS frames with a face scored at least
 # FACE_VERIFY_PRESENCE. Not yet tuned on live Orin scores: a logit of +5 (0.993), taken from issue #3's offline
 # replay, was never reached live. The [STAGES] log prints the live face logits (face_logit=) to set it from.
@@ -237,17 +249,25 @@ def main():
     # The Orin's OpenCV (GTK) shows images unscaled in the top-left of a full-screen window, so the frame
     # itself must be screen-sized. The window's reported size is not used: before the window manager makes it
     # full screen, OpenCV reports a small default size (it shrank the picture to 1/16 of the screen).
+    # The monitor is read at every start, so the unit can be plugged into any TV or monitor (issue #12).
+    canvas = picture = None  # screen-sized black image, and the area of it the picture is drawn in
     if config.fullscreen and config.width <= 0 and config.height <= 0:
         screen = _screen_size()
         if screen:
             display_w, display_h = _fit(capture.width, capture.height, *screen)
-            print(f'[DISPLAY] screen {screen[0]}x{screen[1]}, drawing at {display_w}x{display_h}', flush=True)
+            if (display_w, display_h) != tuple(screen):
+                canvas, picture = _screen_canvas(*screen, display_w, display_h)
+            print(f'[DISPLAY] screen {screen[0]}x{screen[1]}, drawing at {display_w}x{display_h}'
+                  + (', centred on a black screen-sized canvas' if canvas is not None else ''), flush=True)
         else:
             print('[DISPLAY] could not read the screen size (xrandr); pass --width/--height', flush=True)
     scale_display = (display_w != capture.width or display_h != capture.height)
     display_gpu = cv2.cuda_GpuMat()
     # --black-bg shows none of the camera image, so draw on this instead of resizing and downloading the frame.
-    black_frame = np.zeros((display_h, display_w, 3), np.uint8) if config.black_bg else None
+    if config.black_bg:
+        black_frame = picture if picture is not None else np.zeros((display_h, display_w, 3), np.uint8)
+    else:
+        black_frame = None
 
     # Accumulated ms per stage (capture, person, face, hands, body, smooth, render); printed as 60-frame averages with --fps.
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
@@ -406,6 +426,9 @@ def main():
             else:
                 cpu_frame = frame_gpu.download()
                 cs_x = cs_y = 1.0
+            if picture is not None and cpu_frame is not picture:
+                picture[:] = cpu_frame
+                cpu_frame = picture
 
             dump_now = dump_dir and time.monotonic() - last_dump >= config.dump_every
             if dump_now:
@@ -430,7 +453,7 @@ def main():
                 if fps_counter._print_counter % 60 == 0:
                     print(f"[FPS] {fps_counter.get_fps():.1f}", flush=True)
 
-            cv2.imshow(WINDOW_NAME, cpu_frame)
+            cv2.imshow(WINDOW_NAME, canvas if canvas is not None else cpu_frame)
 
             if _is_quit_key(cv2.waitKey(1)):
                 print('[EXIT] quit key pressed', flush=True)
