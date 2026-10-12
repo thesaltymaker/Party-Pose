@@ -474,7 +474,7 @@ def main():
 
     def render(out) -> bool:
         """Draw and show one frame's results; False when the quit key was pressed."""
-        nonlocal display_gpu, dump_n, last_dump, rendered
+        nonlocal display_gpu, dump_n, last_dump, rendered, label_t0
         (frame_gpu, frame_w, frame_h, all_face_results, all_hand_results, all_body_results, id_labels,
          detections, track_ids) = out
         # Timing for the final stage: GPU download, drawing, imshow, and waitKey.
@@ -508,6 +508,9 @@ def main():
         renderer.draw_body(cpu_frame, all_body_results, display_w, display_h, cs_x, cs_y)
         if config.show_ids:
             renderer.draw_ids(cpu_frame, id_labels, cs_x, cs_y)
+        if config.test_label:
+            label_t0 = label_t0 or time.monotonic()
+            renderer.draw_banner(cpu_frame, f'{config.test_label}  {int(time.monotonic() - label_t0)} s')
 
         if dump_now:
             dump_n += 1
@@ -552,6 +555,7 @@ def main():
         return True
 
     rendered, t_start = 0, time.monotonic()
+    label_t0 = None  # when the first picture was shown, for the --test-label seconds counter
     try:
         if config.pipeline:
             _run_pipelined(infer, render)

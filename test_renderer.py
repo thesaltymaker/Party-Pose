@@ -70,3 +70,14 @@ def test_body_skeleton_stops_at_the_wrists():
     assert frame[100, 100].any()           # wrist drawn
     assert not frame[300, 300].any()       # finger points not drawn
     assert not frame[200, 200].any()       # no line from the wrist to them
+
+
+def test_banner_is_drawn_big_at_the_top_centre():
+    # --test-label: live tests show what to do and the seconds counter on the screen.
+    from src.renderer import Renderer
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    Renderer().draw_banner(frame, 'PART 3  12 s')
+    rows = np.nonzero(frame.any(axis=(1, 2)))[0]
+    cols = np.nonzero(frame.any(axis=(0, 2)))[0]
+    assert rows.max() < 1080 // 4 and rows.max() - rows.min() > 1080 // 20   # top, readable from ~10 ft
+    assert abs((cols.min() + cols.max()) / 2 - 960) < 20                        # centred

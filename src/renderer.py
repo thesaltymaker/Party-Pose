@@ -133,6 +133,15 @@ class Renderer:
             cv2.putText(cpu_frame, f'#{track_id}', org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick * 3)
             cv2.putText(cpu_frame, f'#{track_id}', org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick)
 
+    def draw_banner(self, cpu_frame: np.ndarray, text: str) -> None:
+        """--test-label: big white text at the top centre, so people in a live test can read it from the room."""
+        scale = max(1.0, cpu_frame.shape[0] / 400)
+        thick = max(2, int(scale * 2))
+        (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+        org = ((cpu_frame.shape[1] - text_w) // 2, text_h + int(10 * scale))
+        cv2.putText(cpu_frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thick * 3)
+        cv2.putText(cpu_frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), thick)
+
     def draw_fps(self, cpu_frame: np.ndarray, fps: float) -> None:
         cv2.putText(cpu_frame, f'FPS: {fps:.1f}', (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, COLOR_FPS, 2)

@@ -24,6 +24,7 @@ class Config:
     track_report: float = 0.0   # seconds between [TRACK] stat lines (0 = off)
     require_face: bool = False  # draw a person only once a real face has been seen in their track
     drop_still: bool = False    # don't draw tracks that haven't moved for ~10 s (props; issue #7)
+    test_label: str = ""        # live tests: text and a seconds counter drawn at the top of the screen
     ghost_frames: int = 5       # frames a missing body, face or hand is redrawn, dimming (issue #13; 0 = off)
     smooth: bool = True         # smooth landmarks across frames (--no-smooth for A/B tests)
     pipeline: bool = False      # run the next frame's models while this frame is drawn (one frame later on screen)
@@ -71,6 +72,8 @@ def parse_args() -> Config:
     parser.add_argument("--drop-still", action="store_true",
                         help="Don't draw a person whose box hasn't moved for ~10 s (lamps, chairs; also people "
                              "sitting very still)")
+    parser.add_argument("--test-label", default="", metavar="TEXT",
+                        help="Live tests: show TEXT and the seconds since the picture appeared at the top of the screen")
     parser.add_argument("--ghost-frames", type=int, default=5, metavar="N",
                         help="When a tracked person's body, face or hand is missing, redraw its last result "
                              "for N-1 frames, dimming, then drop it (default 5 = 1/6 s at 30 FPS; 0 = off)")
@@ -122,6 +125,7 @@ def parse_args() -> Config:
         require_face=args.require_face,
         drop_still=args.drop_still,
         ghost_frames=args.ghost_frames,
+        test_label=args.test_label,
         smooth=args.smooth,
         pipeline=args.pipeline,
         video=args.video,
