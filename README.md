@@ -163,6 +163,23 @@ Jetson Orin Nano Super (`python poser.py --platform orin --fps`, 1080p CSI camer
 - Deploy only through git: push from the laptop, `git pull` on the Orin. Never copy the repo directory onto the Orin.
 - Enable the pre-push hook once per clone (`git config core.hooksPath tools/git-hooks`). Every push then takes a snapshot of the Orin's environment, models and camera settings first.
 
+### Connecting the Orin to a local wifi network
+
+At a venue there is no wired network. Run this on the Orin to join the local wifi:
+
+```bash
+sudo nmcli device wifi connect "<SSID>" password "<password>"
+```
+
+The network is saved and joined again at boot without anyone logging in. Check the connection and find the wifi IP to SSH to:
+
+```bash
+nmcli device status
+ip -br addr show wlP1p1s0
+```
+
+If `wlP1p1s0` shows `unavailable`, the wifi radio is off. Turn it on with `sudo nmcli radio wifi on` and wait a few seconds before checking again.
+
 ## Debugging detections
 
 ```bash

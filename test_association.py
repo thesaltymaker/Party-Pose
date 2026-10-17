@@ -170,14 +170,14 @@ def test_face_box_from_pose_is_a_square_around_the_face_points():
     assert (box.w, box.h) == (80, 80) and (box.x + box.w / 2, box.y + box.h / 2) == (120, 55)
 
 
-def test_face_crop_prefers_the_given_crop_and_falls_back_to_the_other():
+def test_face_crop_comes_from_the_pose_else_the_head_box():
     from poser import _face_box
+    from src.types import BodyResult
     head = _box(90, 20, 60, 70)
-    pose = _pose_with_face()
-    box, kind = _face_box(head, pose, 1920, 1080)                 # pose first by default
-    assert kind == 'pose' and box.w == 80
-    assert _face_box(head, pose, 1920, 1080, prefer='head') == (head, 'head')
-    assert _face_box(None, pose, 1920, 1080, prefer='head')[1] == 'pose'   # no head box: the pose crop
-    assert _face_box(head, None, 1920, 1080) == (head, 'head')    # no pose yet: the head box
-    assert _face_box(None, None, 1920, 1080) == (None, None)
-    assert _face_box(head, _pose_with_face(x0=2500.0), 1920, 1080) == (head, 'head')  # pose face off the picture
+    body = BodyResult(landmarks=_pose_with_face(), presence=1.0)
+    assert _face_box(body, head, 1920, 1080).w == 80          # a body: the pose's face points
+    assert _face_box(body, None, 1920, 1080).w == 80          # also when the detector found no head
+    assert _face_box(None, head, 1920, 1080) == head          # no pose: the head box
+    assert _face_box(None, None, 1920, 1080) is None
+    off = BodyResult(landmarks=_pose_with_face(x0=2500.0), presence=1.0)
+    assert _face_box(off, head, 1920, 1080) == head           # pose face outside the picture: the head box
