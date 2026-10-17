@@ -33,6 +33,7 @@ class Config:
     video: Optional[str] = None  # read this raw clip (src/raw_video.py) instead of the camera, as fast as possible
     skelly: bool = False        # filled bone-coloured face with eyes, nose and mouth cut out
     santa_hat: bool = False     # Santa hat on each face
+    detector: str = ""          # person detector model file in models/ ("" = the default YOLOX nano 320x256)
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -94,6 +95,9 @@ def parse_args() -> Config:
                         help="Draw a person only in frames with a detector box, as before (for A/B comparison)")
     parser.add_argument("--skelly", action="store_true", help="Filled skeleton face (eyes, nose and mouth cut out)")
     parser.add_argument("--santa-hat", action="store_true", help="Draw a Santa hat on each face")
+    parser.add_argument("--detector", default="", metavar="FILE",
+                        help="Person detector model file in models/ (NHWC input; tools/orin_bench/detector_nhwc.py "
+                             "makes one from a PINTO model zoo YOLOX-Body-Head-Hand model; default: the YOLOX nano 320x256)")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
@@ -140,4 +144,5 @@ def parse_args() -> Config:
         video=args.video,
         skelly=args.skelly,
         santa_hat=args.santa_hat,
+        detector=args.detector,
     )

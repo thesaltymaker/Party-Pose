@@ -82,3 +82,19 @@ def test_pipeline_is_off_unless_asked():
         assert parse_args().pipeline is False
     with patch("sys.argv", ["poser.py", "--pipeline"]):
         assert parse_args().pipeline is True
+
+
+def test_detector_is_the_default_model_unless_given():
+    from pathlib import Path
+    from src.config import parse_args
+    from src.model_manager import ModelManager
+    with patch("sys.argv", ["poser.py"]):
+        assert parse_args().detector == ""
+    with patch("sys.argv", ["poser.py", "--detector", "big.onnx"]):
+        assert parse_args().detector == "big.onnx"
+    default = ModelManager(Path("models"), platform="orin")
+    assert default._MODEL_FILES["person_detector"].startswith("yolox_n_body_head_hand_post_0461")
+    other = ModelManager(Path("models"), platform="orin", detector="big.onnx")
+    assert other._MODEL_FILES["person_detector"] == "big.onnx"
+    assert other._TRT_MODEL_FILE_OVERRIDES["person_detector"] == "big.shapeinferred.onnx"
+    assert ModelManager._MODEL_FILES["person_detector"] == default._MODEL_FILES["person_detector"]

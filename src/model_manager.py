@@ -45,10 +45,14 @@ class ModelManager:
         },
     }
 
-    def __init__(self, models_dir: Path, platform: str = "laptop") -> None:
+    def __init__(self, models_dir: Path, platform: str = "laptop", detector: str = "") -> None:
         self.models_dir = models_dir
         self.platform = platform
         self._sessions: Dict[str, ort.InferenceSession] = {}
+        if detector:  # --detector FILE in models/; the Orin uses its .shapeinferred.onnx copy (tools/orin_bench/detector_nhwc.py)
+            self._MODEL_FILES = {**self._MODEL_FILES, self.person_detector: detector}
+            self._TRT_MODEL_FILE_OVERRIDES = {**self._TRT_MODEL_FILE_OVERRIDES,
+                                              self.person_detector: detector[:-len('.onnx')] + '.shapeinferred.onnx'}
 
     def validate(self, required: List[str]) -> None:
         missing_files = []

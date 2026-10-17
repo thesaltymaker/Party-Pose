@@ -25,11 +25,11 @@ class PersonDetector:
 
     Output tensor 'batchno_classid_score_x1y1x2y2': shape [60, 7]
         columns: [batch_no, class_id, score, x1, y1, x2, y2]
-        x1/y1/x2/y2 are in model input pixel space (320×256).
+        x1/y1/x2/y2 are in model input pixel space (320×256 for the default model; set from the model's input).
         class_id: 0=Body  1=Head  2=Hand
     """
 
-    INPUT_W = 320
+    INPUT_W = 320  # the default model's input; replaced by the loaded model's own size on first use (--detector)
     INPUT_H = 256
     CONF_THRESHOLD = 0.3
     CLASS_BODY = 0
@@ -43,6 +43,7 @@ class PersonDetector:
     def process(self, frame_gpu, frame_w: int, frame_h: int) -> PersonDetections:
         session = self.model_manager.get_session('person_detector')
         if self._gpu is None:
+            _, self.INPUT_H, self.INPUT_W, _ = session.get_inputs()[0].shape  # NHWC [1, H, W, 3]
             self._gpu = GpuDetectorInput(session, 'input', 'batchno_classid_score_x1y1x2y2', self.INPUT_W, self.INPUT_H)
         if self._gpu.on_gpu:
             raw = self._gpu.run(frame_gpu, frame_w, frame_h)

@@ -299,7 +299,7 @@ def _run_pipelined(produce, consume) -> None:
 def main():
     config = parse_args()
     models_dir = Path(__file__).parent / 'models'
-    model_manager = ModelManager(models_dir, platform=config.platform)
+    model_manager = ModelManager(models_dir, platform=config.platform, detector=config.detector)
 
     any_modality = config.face or config.hands or config.body
     required_models = []
