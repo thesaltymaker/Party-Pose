@@ -24,6 +24,7 @@ class RawVideoWriter:
         self.width, self.height = width, height
         self.count = 0
         self.fps = 0.0  # set by the recorder before closing
+        self.meta = {}  # extra info saved in the .json (light, camera gain/exposure log)
         self._f = open(self.path.with_suffix('.bgr'), 'wb')
 
     def write(self, frame: np.ndarray) -> None:
@@ -35,7 +36,7 @@ class RawVideoWriter:
     def close(self) -> None:
         self._f.close()
         self.path.with_suffix('.json').write_text(json.dumps(
-            {'width': self.width, 'height': self.height, 'count': self.count, 'fps': self.fps}))
+            {**self.meta, 'width': self.width, 'height': self.height, 'count': self.count, 'fps': self.fps}))
 
     def __enter__(self) -> 'RawVideoWriter':
         return self

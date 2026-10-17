@@ -101,3 +101,24 @@ def test_frames_are_read_ahead_in_the_background(tmp_path):
     assert [int(r.read()[0, 0, 0]) for _ in range(6)] == list(range(6))
     with pytest.raises(EOFError):
         r.read()
+
+
+def test_extra_info_is_saved_with_the_clip(tmp_path):
+    # record_video.py stores the light and the camera's gain/exposure log next to the frames.
+    import json
+    path = tmp_path / 'clip'
+    with RawVideoWriter(path, 8, 6) as w:
+        w.write(_frames(1)[0])
+        w.meta['light'] = 'lamps on'
+        w.meta['brightness'] = [{'t': 0.0, 'gain': 170, 'exposure_us': 29999, 'luma': 41.2, 'saturated_pct': 0.1}]
+    meta = json.loads(path.with_suffix('.json').read_text())
+    assert meta['light'] == 'lamps on' and meta['brightness'][0]['gain'] == 170
+    assert meta['count'] == 1 and RawVideoReader(path).count == 1
+
+
+def test_brightness_of_a_frame():
+    from tools.orin_bench.record_video import frame_brightness
+    frame = np.zeros((10, 10, 3), np.uint8)
+    frame[:5] = 255
+    luma, saturated = frame_brightness(frame)
+    assert round(luma) == 128 and saturated == 50.0
