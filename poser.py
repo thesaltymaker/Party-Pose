@@ -70,15 +70,16 @@ def _moved_face(face: FaceResult, old_head: BoundingBox, new_head: BoundingBox) 
                       person_id=face.person_id, presence=face.presence)
 
 
-def _face_box(body: Optional[BodyResult], head: Optional[BoundingBox], frame_w: int, frame_h: int
-              ) -> Optional[BoundingBox]:
-    """Where to run the face model for a person: around the pose's face points when there is a pose (issue #13: a
-    body always has a head, and the detector's head box is missing in a third of frames), else the head box."""
-    if body is not None:
-        box = face_box_from_pose(body.landmarks)
-        if box.w >= 1 and box.x < frame_w and box.y < frame_h and box.x + box.w > 0 and box.y + box.h > 0:
-            return box
-    return head
+def _face_box(head: Optional[BoundingBox], last_pose, frame_w: int, frame_h: int) -> Optional[BoundingBox]:
+    """Where to run the face model for a person: their head box, else around the face points of their pose in
+    the previous frame (issue #13: a body always has a head, but the detector's head box is missing in a third of
+    frames). The head box first: on the daylight two-people clip it found more faces than the pose crop."""
+    if head is not None or last_pose is None:
+        return head
+    box = face_box_from_pose(last_pose)
+    if box.w >= 1 and box.x < frame_w and box.y < frame_h and box.x + box.w > 0 and box.y + box.h > 0:
+        return box
+    return None
 
 
 def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies, cs_x: float, cs_y: float,
@@ -280,6 +281,7 @@ def main():
     smoother    = PoseSmoother() if config.smooth else None  # smooths landmarks per person across frames
     body_rois   = {}  # track id -> pose crop (cx, cy, size, angle) from that person's last body landmarks
     hand_rois   = {}  # track id -> (left, right) hand crops from that person's last hand landmarks
+    last_poses  = {}  # track id -> that person's last body landmarks, for a face crop when there is no head box
     track_stats = TrackStats() if config.track_report > 0 else None
     last_report = time.monotonic()
     require_face = config.require_face and face_proc is not None
@@ -337,7 +339,7 @@ def main():
 
     def infer():
         """Capture a frame and run the models, tracking and smoothing on it."""
-        nonlocal frame_no, body_rois, hand_rois, last_report
+        nonlocal frame_no, body_rois, hand_rois, last_poses, last_report
         frame_no += 1
         t = time.perf_counter()
         frame_gpu = capture.read_frame()
@@ -371,6 +373,7 @@ def main():
             live_ids = {tr.id for tr in tracker.tracks}
             body_rois = {k: v for k, v in body_rois.items() if k in live_ids}
             hand_rois = {k: v for k, v in hand_rois.items() if k in live_ids}
+            last_poses = {k: v for k, v in last_poses.items() if k in live_ids}
             for line in tracker.events:
                 print(line, flush=True)
             tracker.events.clear()
@@ -382,16 +385,8 @@ def main():
             counts['still'] += len(confirmed) - len(people)
             heads = _assign_heads([box for _, box in people], detections.head_boxes)
             counts['people'] += len(people)
-            # Every person's pose first: their face crop comes from it (issue #13).
-            bodies = [None] * len(people)
-            if body_proc:
-                t = time.perf_counter()
-                for k, (track, body_bbox) in enumerate(people):
-                    bodies[k] = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror,
-                                                  roi=body_rois.get(track.id))
-                    body_rois[track.id] = bodies[k].roi if bodies[k] is not None else None
-                stage_ms['body'] += (time.perf_counter() - t) * 1000
-            face_boxes = [_face_box(body, head, frame_w, frame_h) for body, head in zip(bodies, heads)]
+            face_boxes = [_face_box(head, last_poses.get(track.id), frame_w, frame_h)
+                          for (track, _), head in zip(people, heads)]
             # Every person's face goes through the face model in one run (cheaper per face on the Orin).
             faces_by_person = {}  # index in people -> (FaceResult or None, face logit)
             if face_proc:
@@ -406,8 +401,7 @@ def main():
             for k, ((track, body_bbox), head_bbox) in enumerate(zip(people, heads)):
                 person_id = track.id
                 still = track.is_still()
-                face = face_logit = None
-                body = bodies[k]
+                face = face_logit = body = None
                 if face_boxes[k] is not None:
                     heads_now[person_id] = face_boxes[k]
 
@@ -432,10 +426,17 @@ def main():
                 counts['drawn'] += 1
                 id_labels.append((person_id, body_bbox))
 
-                if body is not None:
-                    body.person_id = person_id
-                    all_body_results.append(body)
-                    seen[(person_id, 'body')] = body
+                if body_proc:
+                    t = time.perf_counter()
+                    body = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror,
+                                             roi=body_rois.get(person_id))
+                    body_rois[person_id] = body.roi if body is not None else None
+                    last_poses[person_id] = body.landmarks if body is not None else None
+                    stage_ms['body'] += (time.perf_counter() - t) * 1000
+                    if body is not None:
+                        body.person_id = person_id
+                        all_body_results.append(body)
+                        seen[(person_id, 'body')] = body
 
                 # Hands are cropped from the pose's wrists (or the hand's last landmarks), so they need the body.
                 if hand_proc and body is not None:

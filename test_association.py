@@ -170,14 +170,11 @@ def test_face_box_from_pose_is_a_square_around_the_face_points():
     assert (box.w, box.h) == (80, 80) and (box.x + box.w / 2, box.y + box.h / 2) == (120, 55)
 
 
-def test_face_crop_comes_from_the_pose_else_the_head_box():
+def test_face_crop_is_the_head_box_else_the_last_pose():
     from poser import _face_box
-    from src.types import BodyResult
     head = _box(90, 20, 60, 70)
-    body = BodyResult(landmarks=_pose_with_face(), presence=1.0)
-    assert _face_box(body, head, 1920, 1080).w == 80          # a body: the pose's face points
-    assert _face_box(body, None, 1920, 1080).w == 80          # also when the detector found no head
-    assert _face_box(None, head, 1920, 1080) == head          # no pose: the head box
+    pose = _pose_with_face()
+    assert _face_box(head, pose, 1920, 1080) == head            # a head box: as before
+    assert _face_box(None, pose, 1920, 1080).w == 80            # none: around the last pose's face points
     assert _face_box(None, None, 1920, 1080) is None
-    off = BodyResult(landmarks=_pose_with_face(x0=2500.0), presence=1.0)
-    assert _face_box(off, head, 1920, 1080) == head           # pose face outside the picture: the head box
+    assert _face_box(None, _pose_with_face(x0=2500.0), 1920, 1080) is None  # outside the picture
