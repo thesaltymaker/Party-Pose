@@ -24,6 +24,8 @@ from src.smoothing import PoseSmoother
 from src.track_stats import TrackStats
 from src.flicker import FlickerCounter
 from src.ghosts import Ghosts
+from src.motion import MotionStats
+from src.hold import JointHold
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult, Landmark
 
 
@@ -332,7 +334,9 @@ def main():
     body_proc   = BodyProcessor(model_manager) if config.body else None
 
     tracker     = PersonTracker()
-    smoother    = PoseSmoother() if config.smooth else None  # smooths landmarks per person across frames
+    smoother    = PoseSmoother({k: (mc, b) for k, mc, b in config.smooth_params},
+                               config.score_smooth) if config.smooth else None  # smooths landmarks per person
+    joint_hold  = JointHold(config.hold_joints)  # lost body joints held at their last place, dimming
     body_rois   = {}  # track id -> pose crop (cx, cy, size, angle) from that person's last body landmarks
     hand_rois   = {}  # track id -> (left, right) hand crops from that person's last hand landmarks
     track_stats = TrackStats() if config.track_report > 0 else None
@@ -374,6 +378,7 @@ def main():
                              'hands_found', 'small', 'hands_off')}
     ghosts = Ghosts(config.ghost_frames)  # last results of each person's parts, redrawn dimming when missing
     flicker = FlickerCounter()  # [FLICKER] blink counts per part, printed at the end of a --video run
+    motion = MotionStats() if config.video and config.motion_stats else None  # [MOTION] line (--motion-stats)
     frame_no = 0
     face_logits: List[float] = []  # face model logits of drawn faces, for tuning FACE_VERIFY_PRESENCE
 
@@ -560,11 +565,13 @@ def main():
             t = time.perf_counter()
             smoother.smooth(all_face_results, all_hand_results, all_body_results, t_frame)
             stage_ms['smooth'] += (time.perf_counter() - t) * 1000
+        joint_hold.apply(all_body_results)
 
         # Ghosts (issue #13): a tracked person's part missing this frame is drawn again from its last smoothed
         # result, dimming, in the track's colour. Copies with their own brightness, so the result being drawn
         # by the other thread (--pipeline) is never changed.
         ghosted = ghosts.update(seen)
+        drawn = {key: item[0] if key[1] == 'face' else item for key, item in seen.items()}
         for (person_id, part), item, fade in ghosted:
             if part == 'face':
                 face, old_head = item
@@ -575,8 +582,12 @@ def main():
                 all_body_results.append(dataclasses.replace(item, fade=fade))
             else:
                 all_hand_results.append(dataclasses.replace(item, fade=fade))
+            drawn[(person_id, part)] = (all_face_results if part == 'face' else all_body_results if part == 'body'
+                                        else all_hand_results)[-1]
         counts['ghosts'] += len(ghosted)
         flicker.update(list(seen) + [key for key, _, _ in ghosted])
+        if motion:
+            motion.update(drawn, frame_w, frame_h)
 
         if black_frame is not None:
             frame_gpu = None            # not drawn
@@ -685,6 +696,8 @@ def main():
         print(f'[BENCH] frames={rendered} seconds={seconds:.1f} fps={rendered / seconds:.2f} '
               f'pipeline={config.pipeline} smooth={config.smooth}', flush=True)
         print(flicker.report(), flush=True)
+        if motion:
+            print(motion.report(), flush=True)
         print('[EXIT] end of video', flush=True)
     except RuntimeError as e:
         # Non-zero so the systemd service restarts after e.g. a camera read failure.

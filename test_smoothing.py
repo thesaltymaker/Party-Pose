@@ -65,3 +65,37 @@ def test_smoothing_starts_from_the_processor_points_when_given():
     body.pts = np.array([[10.0, 20.0], [30.0, 40.0], [50.0, 60.0]])
     PoseSmoother().smooth([], [], [body], 0.0)
     assert [(lm.x, lm.y, lm.z) for lm in body.landmarks] == [(10, 20, 7), (30, 40, 7), (50, 60, 7)]
+
+
+def test_each_part_kind_can_have_its_own_filter_settings():
+    # A face filtered much harder than the body: after a step, the face has moved less of the way.
+    from src.types import BodyResult, FaceResult
+    ps = PoseSmoother(params={'face': (0.05, 0.0), 'body': (5.0, 0.0)})
+    for f in range(12):
+        x = 0.0 if f < 10 else 50.0
+        face = FaceResult(bbox=None, landmarks=[Landmark(x, 0.0, 0.0), Landmark(x + 100, 100.0, 0.0)], person_id=1)
+        body = BodyResult(landmarks=[Landmark(x, 0.0, 0.0), Landmark(x + 100, 100.0, 0.0)], person_id=1)
+        ps.smooth([face], [], [body], f / FPS)
+    assert face.landmarks[0].x < 5 < 30 < body.landmarks[0].x
+
+
+def _scored_body(presence, visibility=1.0):
+    from src.types import BodyResult
+    return BodyResult(landmarks=[Landmark(0.0, 0.0, 0.0, visibility, presence) for _ in range(2)], person_id=1)
+
+
+def test_score_smoothing_keeps_a_joint_through_a_one_frame_dip():
+    ps = PoseSmoother(score_alpha=0.3)
+    for f, p in enumerate([1.0, 1.0, 1.0, 0.2]):
+        body = _scored_body(p, visibility=p)
+        ps.smooth([], [], [body], f / FPS)
+    assert abs(body.landmarks[0].presence - 0.76) < 1e-6  # 1 + 0.3 * (0.2 - 1)
+    assert abs(body.landmarks[0].visibility - 0.76) < 1e-6
+
+
+def test_score_smoothing_off_by_default():
+    ps = PoseSmoother()
+    for f, p in enumerate([1.0, 0.2]):
+        body = _scored_body(p)
+        ps.smooth([], [], [body], f / FPS)
+    assert body.landmarks[0].presence == 0.2

@@ -100,22 +100,25 @@ class Renderer:
                 x, y = int(lm.x * cs_x), int(lm.y * cs_y)
                 if not (-0.05 * frame_w <= x <= 1.05 * frame_w and -0.05 * frame_h <= y <= 1.05 * frame_h):
                     continue
-                if lm.presence < 0.5:
+                if lm.presence < 0.5 and lm.fade >= 1.0:
                     continue
-                pt_color = dim_color if lm.visibility < 0.5 else color
+                if lm.fade < 1.0:  # a lost joint held at its last place (--hold-joints)
+                    pt_color = _faded(color, lm.fade)
+                else:
+                    pt_color = dim_color if lm.visibility < 0.5 else color
                 cv2.circle(cpu_frame, (x, y), 4, pt_color, -1)
             for conn in BODY_CONNECTIONS:
                 if conn[0] in _BODY_SKIP_LM or conn[1] in _BODY_SKIP_LM:
                     continue
                 start = result.landmarks[conn[0]]
                 end   = result.landmarks[conn[1]]
-                if start.presence < 0.5 or end.presence < 0.5:
+                if (start.presence < 0.5 and start.fade >= 1.0) or (end.presence < 0.5 and end.fade >= 1.0):
                     continue
                 px, py = int(start.x * cs_x), int(start.y * cs_y)
                 ex, ey = int(end.x   * cs_x), int(end.y   * cs_y)
                 if (-0.05 * frame_w <= px <= 1.05 * frame_w and -0.05 * frame_h <= py <= 1.05 * frame_h and
                         -0.05 * frame_w <= ex <= 1.05 * frame_w and -0.05 * frame_h <= ey <= 1.05 * frame_h):
-                    cv2.line(cpu_frame, (px, py), (ex, ey), color, 2)
+                    cv2.line(cpu_frame, (px, py), (ex, ey), _faded(color, min(start.fade, end.fade)), 2)
 
     def draw_ids(self, cpu_frame: np.ndarray, labels, cs_x: float = 1.0, cs_y: float = 1.0) -> None:
         """Draw '#<track id>' at the top centre of each person's body box (--show-ids).
