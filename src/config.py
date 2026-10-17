@@ -34,6 +34,7 @@ class Config:
     skelly: bool = False        # filled bone-coloured face with eyes, nose and mouth cut out
     santa_hat: bool = False     # Santa hat on each face
     detector: str = ""          # person detector model file in models/ ("" = the default YOLOX nano 320x256)
+    detector_bgr: bool = False  # feed the person detector BGR (the order YOLOX was trained on) instead of RGB
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -98,6 +99,9 @@ def parse_args() -> Config:
     parser.add_argument("--detector", default="", metavar="FILE",
                         help="Person detector model file in models/ (NHWC input; tools/orin_bench/detector_nhwc.py "
                              "makes one from a PINTO model zoo YOLOX-Body-Head-Hand model; default: the YOLOX nano 320x256)")
+    parser.add_argument("--detector-bgr", action="store_true",
+                        help="Feed the person detector the frame in BGR order, as the model was trained, instead of RGB "
+                             "(finds more people)")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
@@ -145,4 +149,5 @@ def parse_args() -> Config:
         skelly=args.skelly,
         santa_hat=args.santa_hat,
         detector=args.detector,
+        detector_bgr=args.detector_bgr,
     )

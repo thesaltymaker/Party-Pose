@@ -326,7 +326,7 @@ def main():
         print(f'Error opening camera: {e}', file=sys.stderr)
         sys.exit(1)
 
-    person_proc = PersonDetector(model_manager) if any_modality else None
+    person_proc = PersonDetector(model_manager, config.detector_bgr) if any_modality else None
     face_proc   = FaceProcessor(model_manager, config.face_expressions) if config.face else None
     hand_proc   = HandProcessor(model_manager) if config.hands else None
     body_proc   = BodyProcessor(model_manager) if config.body else None

@@ -98,3 +98,11 @@ def test_detector_is_the_default_model_unless_given():
     assert other._MODEL_FILES["person_detector"] == "big.onnx"
     assert other._TRT_MODEL_FILE_OVERRIDES["person_detector"] == "big.shapeinferred.onnx"
     assert ModelManager._MODEL_FILES["person_detector"] == default._MODEL_FILES["person_detector"]
+
+
+def test_detector_gets_rgb_unless_detector_bgr():
+    from src.config import parse_args
+    with patch("sys.argv", ["poser.py"]):
+        assert parse_args().detector_bgr is False
+    with patch("sys.argv", ["poser.py", "--detector-bgr"]):
+        assert parse_args().detector_bgr is True

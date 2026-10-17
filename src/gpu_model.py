@@ -158,8 +158,9 @@ class GpuDetectorInput:
     Orin: 5.38 -> 4.36 ms, same output.
     """
 
-    def __init__(self, session, input_name: str, output_name: str, width: int, height: int) -> None:
+    def __init__(self, session, input_name: str, output_name: str, width: int, height: int, bgr: bool = False) -> None:
         self.session, self.output_name, self.width, self.height = session, output_name, width, height
+        self.bgr = bgr  # keep the frame's BGR order instead of converting to RGB
         self.on_gpu = any(p in session.get_providers() for p in ('TensorrtExecutionProvider', 'CUDAExecutionProvider'))
         if not self.on_gpu:
             return
@@ -179,7 +180,7 @@ class GpuDetectorInput:
             self._padded = cv2.cuda_GpuMat(self.height, self.width, cv2.CV_8UC3)
         # Use the returned GpuMats: on the Orin's OpenCV build dst is not always written in place.
         self._small = cv2.cuda.resize(frame_gpu, (new_w, new_h), self._small)
-        self._rgb = cv2.cuda.cvtColor(self._small, cv2.COLOR_BGR2RGB, self._rgb)
+        self._rgb = self._small if self.bgr else cv2.cuda.cvtColor(self._small, cv2.COLOR_BGR2RGB, self._rgb)
         self._padded = cv2.cuda.copyMakeBorder(self._rgb, pad_y, self.height - new_h - pad_y, pad_x,
                                                self.width - new_w - pad_x, cv2.BORDER_CONSTANT, self._padded, (0, 0, 0))
         if self._padded.convertTo(cv2.CV_32FC3, self._input, 1.0, 0.0).cudaPtr() != self._input.cudaPtr():
