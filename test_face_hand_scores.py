@@ -24,3 +24,13 @@ def test_pose_face_box_is_a_square_around_the_face_points():
 
 def test_wrist_over_torso():
     assert over_torso(_pose(), 0) and not over_torso(_pose(), 1)
+
+
+def test_forearm_crop_is_past_the_wrist_and_sized_from_the_forearm():
+    import math
+    from tools.orin_bench.face_hand_scores import forearm_roi
+    pose = _pose()
+    pose[13], pose[15] = Landmark(100.0, 100.0, 0.0), Landmark(100.0, 200.0, 0.0)  # forearm pointing down, 100 long
+    cx, cy, size, angle = forearm_roi(pose, 0, 1.0)
+    assert (round(cx), round(cy), round(size)) == (100, 230, 100)
+    assert abs(abs(angle) - math.pi) < 1e-6  # the forearm (elbow to wrist) points down: the crop is turned over

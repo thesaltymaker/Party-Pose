@@ -5,13 +5,16 @@ Per frame and confirmed person (as the app, mirrored):
   square crop from the pose's face points (0-10: nose, eyes, ears, mouth) sized 1.5/2.0/2.5x their spread, which
   also works when the detector found no head box;
 - hands: per side, the hand model's presence before the 0.5 cutoff, where the crop came from (the hand's last
-  landmarks, the pose wrist, or none), the wrist's visibility, and whether the wrist is over the torso.
+  landmarks, the pose wrist, or none), the wrist's visibility, and whether the wrist is over the torso;
+- hands per crop choice: each choice in HAND_CROPS runs as its own chain like the app (the hand's last landmarks
+  while it is found, else a new crop from the body), so its found rate is what the app would get with it.
 
 Writes one JSON line per person and frame to OUT and prints a summary. Run on the Orin with the service stopped:
     env/bin/python tools/orin_bench/face_hand_scores.py testdata/clips/face_walk /tmp/fh_face_walk.jsonl
 """
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,15 +28,16 @@ from poser import _assign_heads, _drop_nested_bodies  # noqa: E402
 from src.body_processor import BodyProcessor  # noqa: E402
 from src.config import detect_platform  # noqa: E402
 from src.face_processor import FaceProcessor  # noqa: E402
-from src.hand_processor import HandProcessor, _POSE_HAND  # noqa: E402
+from src.hand_processor import HandProcessor, _POSE_HAND, _rect, hand_roi_from_pose  # noqa: E402
 from src.model_manager import ModelManager  # noqa: E402
 from src.person_detector import PersonDetector  # noqa: E402
+from src.preprocessor import Preprocessor  # noqa: E402
 from src.tracker import PersonTracker  # noqa: E402
 from src.types import BoundingBox  # noqa: E402
 from src.video_capture import VideoCaptureModule  # noqa: E402
 
 HEAD_SCALES = (0.8, 0.9, 1.0, 1.2)
-POSE_SCALES = (1.5, 2.0, 2.5)
+POSE_SCALES = (1.5, 1.75, 2.0, 2.25, 2.5)
 HAND_KEEP = 0.5  # HandProcessor.CONF_THRESHOLD in the app
 
 
@@ -50,6 +54,37 @@ def pose_face_box(pose, s: float) -> BoundingBox:
     side = s * max(x1 - x0, y1 - y0)
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     return BoundingBox(cx - side / 2, cy - side / 2, side, side, 1.0)
+
+
+def fingers_roi(pose, side: int, scale: float):
+    """The app's crop from the pose's wrist, pinky and index points (hand_roi_from_pose), at another scale."""
+    w, p, i = (np.array([pose[k].x, pose[k].y]) for k in _POSE_HAND[side])
+    middle = (2 * i + p) / 3
+    size = 2 * float(np.hypot(*(middle - w)))
+    return _rect(middle[0], middle[1], size, size, Preprocessor.roi_from_alignment(w, middle)[3], scale, -0.1)
+
+
+def forearm_roi(pose, side: int, size: float, ahead: float = 0.3):
+    """A square crop from the elbow-to-wrist line: centred `ahead` forearm lengths past the wrist, `size` forearm
+    lengths wide, turned so the forearm points up. Needs no finger points."""
+    e = np.array([pose[13 + side].x, pose[13 + side].y])
+    w = np.array([pose[15 + side].x, pose[15 + side].y])
+    length = float(np.hypot(*(w - e)))
+    if length < 1:
+        return None
+    c = w + (w - e) * ahead
+    return float(c[0]), float(c[1]), size * length, Preprocessor.roi_from_alignment(e, w)[3]
+
+
+HAND_CROPS = {
+    'app': hand_roi_from_pose,
+    'fingers2.5': lambda pose, side: fingers_roi(pose, side, 2.5),
+    'fingers3.0': lambda pose, side: fingers_roi(pose, side, 3.0),
+    'forearm0.8': lambda pose, side: forearm_roi(pose, side, 0.8),
+    'forearm1.0': lambda pose, side: forearm_roi(pose, side, 1.0),
+    'forearm1.3': lambda pose, side: forearm_roi(pose, side, 1.3),
+    'forearm1.0far': lambda pose, side: forearm_roi(pose, side, 1.0, ahead=0.5),
+}
 
 
 def over_torso(pose, side: int) -> bool:
@@ -75,6 +110,7 @@ def main() -> None:
     hand.CONF_THRESHOLD = 0.0  # every hand's presence is returned; the app's 0.5 cutoff is applied below
     tracker = PersonTracker()
     body_rois, hand_rois = {}, {}
+    chains = {name: {} for name in HAND_CROPS}  # crop choice -> track id -> (left, right) next-frame crops
     rows = []
     frame_no = 0
     with open(args.out, 'w') as out:
@@ -120,6 +156,20 @@ def main() -> None:
                         row['hands'].append({'src': src, 'presence': None if h is None else round(h.presence, 3),
                                              'wrist_vis': round(wrist.visibility, 2), 'over_torso': over_torso(res.landmarks, side)})
                     hand_rois[pid] = tuple(h.roi if h is not None and h.presence >= HAND_KEEP else None for h in found)
+                    row['chains'] = {}
+                    for name, crop in HAND_CROPS.items():
+                        prev = chains[name].get(pid, (None, None))
+                        nxt, got = [], []
+                        for side in (0, 1):
+                            roi = prev[side]
+                            if roi is None and res.landmarks[15 + side].visibility >= hand.WRIST_VISIBILITY:
+                                roi = crop(res.landmarks, side)
+                            h = hand._run(frame, roi) if roi is not None and all(map(math.isfinite, roi)) else None
+                            ok = h is not None and h.presence >= HAND_KEEP
+                            nxt.append(h.roi if ok else None)
+                            got.append(ok)
+                        chains[name][pid] = tuple(nxt)
+                        row['chains'][name] = got
                 out.write(json.dumps(row) + '\n')
                 rows.append(row)
     cap.release()
@@ -153,6 +203,16 @@ def summary(rows, frames: int) -> str:
             lines.append(f'hand{side} {"over torso" if torso else "away     "} n={len(sel)} found(>=0.5) '
                          f'{100 * sum(v >= HAND_KEEP for v in p) / len(sel):.0f}%  no crop {no_crop}  '
                          f'presence bins <0.1/0.1-0.3/0.3-0.4/0.4-0.5/>=0.5: {"/".join(str(int(b)) for b in bins)}')
+    lines.append('hands found per crop choice (both sides, as chains like the app): away / over torso')
+    for name in HAND_CROPS:
+        cnt = {False: [0, 0], True: [0, 0]}
+        for r in rows:
+            for side in (0, 1):
+                if 'chains' in r:
+                    t = r['hands'][side]['over_torso']
+                    cnt[t][0] += r['chains'][name][side]
+                    cnt[t][1] += 1
+        lines.append(f'  {name:14s} ' + ' / '.join(f'{100 * a / max(b, 1):.0f}% of {b}' for a, b in (cnt[False], cnt[True])))
     return '\n'.join(lines)
 
 
