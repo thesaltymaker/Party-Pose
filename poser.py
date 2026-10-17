@@ -70,16 +70,20 @@ def _moved_face(face: FaceResult, old_head: BoundingBox, new_head: BoundingBox) 
                       person_id=face.person_id, presence=face.presence)
 
 
-def _face_box(head: Optional[BoundingBox], last_pose, frame_w: int, frame_h: int) -> Optional[BoundingBox]:
-    """Where to run the face model for a person: their head box, else around the face points of their pose in
-    the previous frame (issue #13: a body always has a head, but the detector's head box is missing in a third of
-    frames). The head box first: on the daylight two-people clip it found more faces than the pose crop."""
-    if head is not None or last_pose is None:
-        return head
-    box = face_box_from_pose(last_pose)
-    if box.w >= 1 and box.x < frame_w and box.y < frame_h and box.x + box.w > 0 and box.y + box.h > 0:
-        return box
-    return None
+def _face_box(head: Optional[BoundingBox], last_pose, frame_w: int, frame_h: int, prefer: str = 'pose'):
+    """Where to run the face model for a person, and which crop it is ('pose', 'head' or None): around the face
+    points of their pose in the previous frame, or the detector's head box (issue #13: a body always has a head, but
+    the head box is missing in a third of frames). `prefer` is the crop to use when both exist: the app switches a
+    person to the other crop after a miss, since neither wins everywhere (Orin clips: the pose crop found 36% more
+    faces at the new spot, the head box 7% more on the daylight clip)."""
+    pose_box = None
+    if last_pose is not None:
+        box = face_box_from_pose(last_pose)
+        if box.w >= 1 and box.x < frame_w and box.y < frame_h and box.x + box.w > 0 and box.y + box.h > 0:
+            pose_box = box
+    if pose_box is not None and (prefer == 'pose' or head is None):
+        return pose_box, 'pose'
+    return (head, 'head') if head is not None else (None, None)
 
 
 def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies, cs_x: float, cs_y: float,
@@ -281,7 +285,8 @@ def main():
     smoother    = PoseSmoother() if config.smooth else None  # smooths landmarks per person across frames
     body_rois   = {}  # track id -> pose crop (cx, cy, size, angle) from that person's last body landmarks
     hand_rois   = {}  # track id -> (left, right) hand crops from that person's last hand landmarks
-    last_poses  = {}  # track id -> that person's last body landmarks, for a face crop when there is no head box
+    last_poses  = {}  # track id -> that person's last body landmarks, for their face crop
+    face_crops  = {}  # track id -> 'pose' or 'head': the face crop to try first (switched after a miss)
     track_stats = TrackStats() if config.track_report > 0 else None
     last_report = time.monotonic()
     require_face = config.require_face and face_proc is not None
@@ -339,7 +344,7 @@ def main():
 
     def infer():
         """Capture a frame and run the models, tracking and smoothing on it."""
-        nonlocal frame_no, body_rois, hand_rois, last_poses, last_report
+        nonlocal frame_no, body_rois, hand_rois, last_poses, face_crops, last_report
         frame_no += 1
         t = time.perf_counter()
         frame_gpu = capture.read_frame()
@@ -374,6 +379,7 @@ def main():
             body_rois = {k: v for k, v in body_rois.items() if k in live_ids}
             hand_rois = {k: v for k, v in hand_rois.items() if k in live_ids}
             last_poses = {k: v for k, v in last_poses.items() if k in live_ids}
+            face_crops = {k: v for k, v in face_crops.items() if k in live_ids}
             for line in tracker.events:
                 print(line, flush=True)
             tracker.events.clear()
@@ -385,8 +391,9 @@ def main():
             counts['still'] += len(confirmed) - len(people)
             heads = _assign_heads([box for _, box in people], detections.head_boxes)
             counts['people'] += len(people)
-            face_boxes = [_face_box(head, last_poses.get(track.id), frame_w, frame_h)
-                          for (track, _), head in zip(people, heads)]
+            face_boxes, face_kinds = zip(*[_face_box(head, last_poses.get(track.id), frame_w, frame_h,
+                                                     face_crops.get(track.id, 'pose'))
+                                           for (track, _), head in zip(people, heads)]) if people else ((), ())
             # Every person's face goes through the face model in one run (cheaper per face on the Orin).
             faces_by_person = {}  # index in people -> (FaceResult or None, face logit)
             if face_proc:
@@ -404,6 +411,8 @@ def main():
                 face = face_logit = body = None
                 if face_boxes[k] is not None:
                     heads_now[person_id] = face_boxes[k]
+                    found = k in faces_by_person and faces_by_person[k][0] is not None
+                    face_crops[person_id] = face_kinds[k] if found else ('head' if face_kinds[k] == 'pose' else 'pose')
 
                 if k in faces_by_person:
                     face, face_logit = faces_by_person[k]  # logit also for rejected faces, in [TRACK] lines

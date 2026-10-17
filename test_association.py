@@ -170,11 +170,14 @@ def test_face_box_from_pose_is_a_square_around_the_face_points():
     assert (box.w, box.h) == (80, 80) and (box.x + box.w / 2, box.y + box.h / 2) == (120, 55)
 
 
-def test_face_crop_is_the_head_box_else_the_last_pose():
+def test_face_crop_prefers_the_given_crop_and_falls_back_to_the_other():
     from poser import _face_box
     head = _box(90, 20, 60, 70)
     pose = _pose_with_face()
-    assert _face_box(head, pose, 1920, 1080) == head            # a head box: as before
-    assert _face_box(None, pose, 1920, 1080).w == 80            # none: around the last pose's face points
-    assert _face_box(None, None, 1920, 1080) is None
-    assert _face_box(None, _pose_with_face(x0=2500.0), 1920, 1080) is None  # outside the picture
+    box, kind = _face_box(head, pose, 1920, 1080)                 # pose first by default
+    assert kind == 'pose' and box.w == 80
+    assert _face_box(head, pose, 1920, 1080, prefer='head') == (head, 'head')
+    assert _face_box(None, pose, 1920, 1080, prefer='head')[1] == 'pose'   # no head box: the pose crop
+    assert _face_box(head, None, 1920, 1080) == (head, 'head')    # no pose yet: the head box
+    assert _face_box(None, None, 1920, 1080) == (None, None)
+    assert _face_box(head, _pose_with_face(x0=2500.0), 1920, 1080) == (head, 'head')  # pose face off the picture

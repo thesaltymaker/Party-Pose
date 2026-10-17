@@ -231,7 +231,7 @@ def summary(rows, frames: int) -> str:
         lines.append(f'face {k:8s} found {pct(with_head + no_head)}  (with head box {with_head}, without {no_head})')
     for s in POSE_SCALES:
         either = sum(kept(r, 'head1.0') or kept(r, f'pose{s}') for r in rows)
-        lines.append(f'face head1.0, else pose{s}: found {pct(either)}')
+        lines.append(f'face head1.0 or pose{s} (either found it, an upper limit): {pct(either)}')
     for side in (0, 1):
         hs = [r['hands'][side] for r in rows if 'hands' in r]
         for torso in (False, True):
