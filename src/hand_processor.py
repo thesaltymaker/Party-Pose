@@ -4,7 +4,7 @@ import numpy as np
 from typing import List, Optional, Sequence, Tuple
 from src.types import BoundingBox, HandResult, Landmark
 from src.model_manager import ModelManager
-from src.gpu_model import GpuModel, gpu_model
+from src.gpu_model import GpuModel, gpu_batch, gpu_model
 from src.preprocessor import Preprocessor
 
 Roi = Tuple[float, float, float, float]  # (cx, cy, size, angle), as Preprocessor.roi_affine takes
@@ -62,18 +62,33 @@ class HandProcessor:
     CONF_THRESHOLD = 0.5
     WRIST_VISIBILITY = 0.5  # pose wrist visibility below this: no crop from the pose for that side
 
-    def __init__(self, model_manager: ModelManager) -> None:
+    def __init__(self, model_manager: ModelManager, batch: int = 0) -> None:
         self.model_manager = model_manager
+        self.batch = batch  # process_many: crops per model run (--hand-batch)
         self._model: Optional[GpuModel] = None  # created on first use (loads the session)
 
     def process(self, frame_gpu, pose: Sequence[Landmark], prev_rois: Sequence[Optional[Roi]]) -> List[Optional[HandResult]]:
         """One HandResult or None per side. prev_rois: each side's HandResult.roi from the previous frame, or None."""
-        out: List[Optional[HandResult]] = []
+        return [self._run(frame_gpu, roi) if roi is not None else None for roi in self._rois(pose, prev_rois)]
+
+    def process_many(self, frame_gpu, people: Sequence[Tuple[Sequence[Landmark], Sequence[Optional[Roi]]]]
+                     ) -> List[List[Optional[HandResult]]]:
+        """process() for several (pose, prev_rois), all hands in runs of `batch` crops (--hand-batch)."""
+        rois = [self._rois(pose, prev) for pose, prev in people]
+        Ms = [Preprocessor.roi_affine(*roi, self.LANDMARK_SIZE) for rs in rois for roi in rs if roi is not None]
+        outs = gpu_batch(self.model_manager, 'hand_landmarks', 'input_1', ['Identity', 'Identity_1', 'Identity_2'],
+                         self.LANDMARK_SIZE, self.batch).run(frame_gpu, Ms) if Ms else []
+        found = iter([self._result(lms, float(p[0]), float(h[0]), M) for lms, p, h, M in zip(*outs, Ms)])
+        return [[next(found) if roi is not None else None for roi in rs] for rs in rois]
+
+    def _rois(self, pose: Sequence[Landmark], prev_rois: Sequence[Optional[Roi]]) -> List[Optional[Roi]]:
+        """Each side's crop: from the hand's previous landmarks, else from the pose if its wrist is visible."""
+        out: List[Optional[Roi]] = []
         for side in (0, 1):
             roi = prev_rois[side]
             if roi is None and pose[_POSE_HAND[side][0]].visibility >= self.WRIST_VISIBILITY:
                 roi = hand_roi_from_pose(pose, side)
-            out.append(self._run(frame_gpu, roi) if roi is not None else None)
+            out.append(roi)
         return out
 
     def _run(self, frame_gpu, roi: Roi) -> Optional[HandResult]:
@@ -82,7 +97,9 @@ class HandProcessor:
             self._model = gpu_model(self.model_manager, 'hand_landmarks', 'input_1',
                                    ['Identity', 'Identity_1', 'Identity_2'], self.LANDMARK_SIZE)
         lms, presence, handedness = self._model.run(frame_gpu, M)
-        presence, handedness = float(presence[0, 0]), float(handedness[0, 0])
+        return self._result(lms, float(presence[0, 0]), float(handedness[0, 0]), M)
+
+    def _result(self, lms: np.ndarray, presence: float, handedness: float, M: np.ndarray) -> Optional[HandResult]:
         if presence < self.CONF_THRESHOLD:
             return None
         lms = lms.reshape(21, 3)

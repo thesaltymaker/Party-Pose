@@ -1,9 +1,9 @@
 from __future__ import annotations
 import numpy as np
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from src.types import BoundingBox, BodyResult
 from src.model_manager import ModelManager
-from src.gpu_model import GpuModel, gpu_model
+from src.gpu_model import GpuModel, gpu_batch, gpu_model
 from src.preprocessor import Preprocessor
 
 
@@ -25,8 +25,9 @@ class BodyProcessor:
     INPUT_H = 256
     PRESENCE_THRESHOLD = 0.5
 
-    def __init__(self, model_manager: ModelManager) -> None:
+    def __init__(self, model_manager: ModelManager, batch: int = 0) -> None:
         self.model_manager = model_manager
+        self.batch = batch  # process_many: crops per model run (--pose-batch)
         self._model: Optional[GpuModel] = None  # created on first use (loads the session)
 
     def process(
@@ -51,7 +52,18 @@ class BodyProcessor:
             roi = Preprocessor.roi_from_alignment((first[33].x, first[33].y), (first[34].x, first[34].y))
 
         M = Preprocessor.roi_affine(*roi, self.INPUT_W)
-        lms, presence = self._outputs(self._gpu().run(frame_gpu, M))
+        return self._result(*self._outputs(self._gpu().run(frame_gpu, M)), M)
+
+    def process_many(self, frame_gpu, rois: List[Tuple[float, float, float, float]]) -> List[Optional[BodyResult]]:
+        """process() with each person's ROI from the previous frame, all in runs of `batch` crops (--pose-batch)."""
+        Ms = [Preprocessor.roi_affine(*roi, self.INPUT_W) for roi in rois]
+        if not Ms:
+            return []
+        lms, presence = gpu_batch(self.model_manager, 'pose_landmarks', 'input_1', ['Identity', 'Identity_1'],
+                                  self.INPUT_W, self.batch).run(frame_gpu, Ms)
+        return [self._result(lms[k].reshape(39, 5), float(presence[k, 0]), M) for k, M in enumerate(Ms)]
+
+    def _result(self, lms: np.ndarray, presence: float, M: np.ndarray) -> Optional[BodyResult]:
         if presence < self.PRESENCE_THRESHOLD:
             return None
         landmarks = Preprocessor.to_image_space_affine(lms, M)

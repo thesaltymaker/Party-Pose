@@ -35,6 +35,8 @@ class Config:
     santa_hat: bool = False     # Santa hat on each face
     detector: str = ""          # person detector model file in models/ ("" = the default YOLOX nano 320x256)
     detector_bgr: bool = False  # feed the person detector BGR (the order YOLOX was trained on) instead of RGB
+    pose_batch: int = 0         # followed people's poses in one model run of this many crops (0 = one run each)
+    hand_batch: int = 0         # all people's hands in model runs of this many crops (0 = one run per hand)
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -102,6 +104,12 @@ def parse_args() -> Config:
     parser.add_argument("--detector-bgr", action="store_true",
                         help="Feed the person detector the frame in BGR order, as the model was trained, instead of RGB "
                              "(finds more people)")
+    parser.add_argument("--pose-batch", type=int, default=0, metavar="N",
+                        help="Run the followed people's pose model together, N crops per run (needs "
+                             "models/pose_landmarks_detector_opset15.dynbatch.onnx, tools/orin_bench/batch_model.py; 0 = off)")
+    parser.add_argument("--hand-batch", type=int, default=0, metavar="N",
+                        help="Run all people's hands together, N crops per run (needs "
+                             "models/hand_landmarks_detector_opset15.dynbatch.onnx; 0 = off)")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
@@ -150,4 +158,6 @@ def parse_args() -> Config:
         santa_hat=args.santa_hat,
         detector=args.detector,
         detector_bgr=args.detector_bgr,
+        pose_batch=args.pose_batch,
+        hand_batch=args.hand_batch,
     )

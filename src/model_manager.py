@@ -107,3 +107,16 @@ class ModelManager:
         session = ort.InferenceSession(str(model_path), sess_options=sess_options, providers=providers)
         self._sessions[name] = session
         return session
+
+    def get_batch_session(self, name: str, slots: int) -> ort.InferenceSession:
+        """A session on the model's .dynbatch.onnx copy (tools/orin_bench/batch_model.py) for a fixed batch of
+        `slots` (GpuBatch): TensorRT builds for that one batch size and replays it as one CUDA graph."""
+        key = f'{name}_batch'
+        if key not in self._sessions:
+            stem = self._MODEL_FILES[name][:-len('.onnx')]
+            shape = f'input_1:{slots}x' + {'pose_landmarks': '256x256x3', 'hand_landmarks': '224x224x3'}[name]
+            self._MODEL_FILES = {**self._MODEL_FILES, key: stem + '.dynbatch.onnx'}
+            self._TRT_EXTRA_OPTS = {**self._TRT_EXTRA_OPTS, key: {
+                'trt_cuda_graph_enable': True, 'trt_profile_min_shapes': shape,
+                'trt_profile_opt_shapes': shape, 'trt_profile_max_shapes': shape}}
+        return self.get_session(key)
