@@ -210,6 +210,24 @@ def test_still_person_who_starts_moving_is_shown_again_within_about_a_second():
     assert not tr.is_still()
 
 
+def test_is_still_works_out_the_spread_once_per_new_box(monkeypatch):
+    # The app asks up to 3 times per track per frame; the spread of 300 centres costs ~0.25 ms each on the laptop.
+    import src.tracker as tracker
+    t = PersonTracker()
+    for _ in range(STILL_FRAMES):
+        [tr] = t.update_tracks([_box(900)])
+    calls = []
+    real = tracker.centre_spread
+    monkeypatch.setattr(tracker, 'centre_spread', lambda s: calls.append(1) or real(s))
+    assert tr.is_still() and tr.is_still()
+    assert len(calls) == 1
+    for f in range(40):
+        [tr] = t.update_tracks([_box(900 + 3 * f)])
+        tr.is_still()
+    assert len(calls) == 41
+    assert not tr.is_still()  # still worked out from the newest box
+
+
 def test_dancer_missed_for_a_second_keeps_their_id_after_moving():
     # Dancing: the detector drops a dancer for longer than max_missed while they move sideways, so the box they
     # come back with no longer overlaps their last box.

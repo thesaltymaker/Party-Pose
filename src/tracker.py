@@ -94,10 +94,13 @@ class Track:
     note: Optional[str] = None  # [NEW-ID] line printed when this new track is confirmed
     history: Deque[Tuple[float, float]] = field(default_factory=lambda: deque(maxlen=300))
     recent: Deque[Tuple[float, float, float]] = field(default_factory=lambda: deque(maxlen=STILL_FRAMES))
+    still: Optional[bool] = None  # is_still() until the next box (the app asks up to 3 times a frame)
 
     def is_still(self) -> bool:
         """True once the box hasn't moved beyond detector jitter over the last STILL_FRAMES matched frames."""
-        return len(self.recent) == STILL_FRAMES and centre_spread(self.recent) < STILL_SPREAD
+        if self.still is None:
+            self.still = len(self.recent) == STILL_FRAMES and centre_spread(self.recent) < STILL_SPREAD
+        return self.still
 
     def predicted(self) -> BoundingBox:
         """The last box moved by the velocity over the frames since it was seen."""
@@ -272,3 +275,4 @@ class PersonTracker:
                 track.note = None
         track.history.append((nx, ny))
         track.recent.append((nx, ny, box.h))
+        track.still = None
