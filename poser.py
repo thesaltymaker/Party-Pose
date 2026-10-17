@@ -19,7 +19,7 @@ from src.hand_processor import HandProcessor
 from src.body_processor import BodyProcessor
 from src.renderer import Renderer
 from src.fps_counter import FPSCounter
-from src.tracker import PersonTracker
+from src.tracker import PersonTracker, iou, overlap_of_smaller
 from src.smoothing import PoseSmoother
 from src.track_stats import TrackStats
 from src.flicker import FlickerCounter
@@ -79,6 +79,42 @@ def _face_box(body: Optional[BodyResult], head: Optional[BoundingBox], frame_w: 
         if box.w >= 1 and box.x < frame_w and box.y < frame_h and box.x + box.w > 0 and box.y + box.h > 0:
             return box
     return head
+
+
+def _pose_box(body: BodyResult, frame_w: int, frame_h: int, grow: float = 0.1) -> BoundingBox:
+    """A person's box from their pose: around the visible body landmarks (0-32), `grow` x its size wider on each
+    side (the detector's box has a margin too), clipped to the frame."""
+    pts = [lm for lm in body.landmarks[:33] if lm.visibility >= 0.5] or body.landmarks[:33]
+    x0, x1 = min(p.x for p in pts), max(p.x for p in pts)
+    y0, y1 = min(p.y for p in pts), max(p.y for p in pts)
+    dx, dy = grow * (x1 - x0), grow * (y1 - y0)
+    x0, y0 = max(0.0, x0 - dx), max(0.0, y0 - dy)
+    x1, y1 = min(float(frame_w), x1 + dx), min(float(frame_h), y1 + dy)
+    return BoundingBox(x0, y0, x1 - x0, y1 - y0, body.presence)
+
+
+def _follow_boxes(poses: List[tuple]) -> dict:
+    """Track id -> pose box of the people to follow, from (track id, pose box) oldest track first.
+
+    Two tracks on one person (two detector boxes on one dancer) end up with the same pose; a pose box with
+    IoU >= 0.5 against an older one is that person found twice and is left out. Two people's poses don't
+    overlap that much unless one hides the other.
+    """
+    out = {}
+    for tid, box in poses:
+        if all(iou(box, other) < 0.5 for other in out.values()):
+            out[tid] = box
+    return out
+
+
+def _boxes_not_followed(body_boxes: List[BoundingBox], pose_boxes) -> List[BoundingBox]:
+    """The detector body boxes that are not a followed person: a box sharing >= 0.4 of the smaller of it and a
+    pose box is that person (a box on part of them, a second box on them, or a box around them), so it must
+    not start a new track. laptop_test: a box on the person's raised arm and the sofa shared 0.41-0.8 and got
+    its own ID at 0.5. two_people: a box on the other person shared >= 0.3 with a pose box in 1.7% of boxes,
+    mostly while both people were followed (then it doesn't matter)."""
+    pose_boxes = list(pose_boxes)
+    return [b for b in body_boxes if all(overlap_of_smaller(b, p) < 0.4 for p in pose_boxes)]
 
 
 def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies, cs_x: float, cs_y: float,
@@ -363,10 +399,36 @@ def main():
             counts['heads'] += len(detections.head_boxes)
             counts['hands'] += len(detections.hand_boxes)
 
+            # Follow found people with the pose model, as MediaPipe does: a confirmed person whose pose was found
+            # last frame gets the pose model on the crop from that pose, with or without a detector box (the
+            # detector misses a moving dancer in most frames). Found again: they stay matched with a box from the
+            # pose, and detector boxes on them start no second track. Not found: they need a detector box again.
+            pre_bodies = {}  # track id -> this frame's pose (or None) for people already run here
+            poses = []
+            if body_proc and config.follow:
+                t = time.perf_counter()
+                for tr in sorted(tracker.tracks, key=lambda tr: (-tr.age, tr.id)):
+                    roi = body_rois.get(tr.id)
+                    if not tr.confirmed or roi is None or (config.drop_still and tr.is_still()):
+                        continue
+                    roi_box = BoundingBox(roi[0] - roi[2] / 2, roi[1] - roi[2] / 2, roi[2], roi[2], 1.0)
+                    body = pre_bodies[tr.id] = body_proc.process(frame_gpu, roi_box, frame_w, frame_h,
+                                                                 config.mirror, roi=roi)
+                    body_rois[tr.id] = body.roi if body is not None else None
+                    if body is not None:
+                        poses.append((tr.id, _pose_box(body, frame_w, frame_h)))
+                stage_ms['body'] += (time.perf_counter() - t) * 1000
+            followed = _follow_boxes(poses)
+            for tid in pre_bodies:
+                if tid not in followed:
+                    pre_bodies[tid] = None  # pose lost, or a second track on a followed person
+                    body_rois[tid] = None
+            free_boxes = _boxes_not_followed(detections.body_boxes, followed.values())
+
             # Stable per-person IDs (and so colours) across frames (issue #6).
             # Only confirmed tracks (seen in a few frames) are processed and drawn, oldest first, so a
             # flickering false positive gets no skeleton and can't take a real person's head or hands.
-            tracks = tracker.update_tracks(detections.body_boxes)
+            tracks = tracker.update_tracks(free_boxes, followed=followed)
             track_ids = [tr.id for tr in tracks]
             live_ids = {tr.id for tr in tracker.tracks}
             body_rois = {k: v for k, v in body_rois.items() if k in live_ids}
@@ -376,7 +438,8 @@ def main():
             tracker.events.clear()
             # --drop-still (issue #7): a track that hasn't moved for ~10 s is a prop (or someone very
             # still); it gets no head, hands, or face and body models.
-            confirmed = [(tr, box) for tr, box in zip(tracks, detections.body_boxes) if tr.confirmed]
+            confirmed = [(tr, box) for tr, box in zip(tracks, free_boxes) if tr.confirmed]
+            confirmed += [(tr, followed[tr.id]) for tr in tracker.tracks if tr.id in followed]
             people = sorted(((tr, box) for tr, box in confirmed if not (config.drop_still and tr.is_still())),
                             key=lambda p: (-p[0].age, p[0].id))
             counts['still'] += len(confirmed) - len(people)
@@ -387,6 +450,9 @@ def main():
             if body_proc:
                 t = time.perf_counter()
                 for k, (track, body_bbox) in enumerate(people):
+                    if track.id in pre_bodies:  # one pose run per person per frame
+                        bodies[k] = pre_bodies[track.id]
+                        continue
                     bodies[k] = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror,
                                                   roi=body_rois.get(track.id))
                     body_rois[track.id] = bodies[k].roi if bodies[k] is not None else None

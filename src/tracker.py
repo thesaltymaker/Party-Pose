@@ -38,7 +38,7 @@ import math
 import statistics
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 from src.types import BoundingBox
 
@@ -164,10 +164,23 @@ class PersonTracker:
         """Match this frame's body boxes to tracks. Returns the track ID for each box, in order."""
         return [t.id for t in self.update_tracks(boxes)]
 
-    def update_tracks(self, boxes: List[BoundingBox]) -> List[Track]:
-        """Like `update()`, but returns the Track for each box (for `confirmed` and `age`)."""
+    def update_tracks(self, boxes: List[BoundingBox],
+                      followed: Optional[Dict[int, BoundingBox]] = None) -> List[Track]:
+        """Like `update()`, but returns the Track for each box (for `confirmed` and `age`).
+
+        followed: track id -> box for people the app found this frame by their pose model (from their last
+        pose, not from the detector). Those tracks are matched with that box and take no part in matching `boxes`.
+        """
+        followed = followed or {}
+        matched_tracks = set()
+        for ti, track in enumerate(self.tracks):
+            if track.id in followed:
+                matched_tracks.add(ti)
+                self._advance(track, followed[track.id])
         pairs = []
         for ti, track in enumerate(self.tracks):
+            if ti in matched_tracks:
+                continue
             for bi, box in enumerate(boxes):
                 score = self._match_score(track, box)
                 if score is not None:
@@ -175,7 +188,6 @@ class PersonTracker:
         pairs.sort(reverse=True)
 
         out: List[Optional[Track]] = [None] * len(boxes)
-        matched_tracks = set()
         for _, ti, bi in pairs:
             if ti in matched_tracks or out[bi] is not None:
                 continue

@@ -27,6 +27,7 @@ class Config:
     test_label: str = ""        # live tests: text and a seconds counter drawn at the top of the screen
     ghost_frames: int = 5       # frames a missing body, face or hand is redrawn, dimming (issue #13; 0 = off)
     smooth: bool = True         # smooth landmarks across frames (--no-smooth for A/B tests)
+    follow: bool = True         # keep a found person by their pose model, not the detector (--no-follow for A/B tests)
     pipeline: bool = False      # run the next frame's models while this frame is drawn (one frame later on screen)
     video: Optional[str] = None  # read this raw clip (src/raw_video.py) instead of the camera, as fast as possible
     skelly: bool = False        # filled bone-coloured face with eyes, nose and mouth cut out
@@ -85,6 +86,8 @@ def parse_args() -> Config:
                              "(faster; picture one frame later)")
     parser.add_argument("--no-smooth", dest="smooth", action="store_false",
                         help="Don't smooth landmarks across frames (for A/B comparison)")
+    parser.add_argument("--no-follow", dest="follow", action="store_false",
+                        help="Draw a person only in frames with a detector box, as before (for A/B comparison)")
     parser.add_argument("--skelly", action="store_true", help="Filled skeleton face (eyes, nose and mouth cut out)")
     parser.add_argument("--santa-hat", action="store_true", help="Draw a Santa hat on each face")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
@@ -127,6 +130,7 @@ def parse_args() -> Config:
         ghost_frames=args.ghost_frames,
         test_label=args.test_label,
         smooth=args.smooth,
+        follow=args.follow,
         pipeline=args.pipeline,
         video=args.video,
         skelly=args.skelly,
