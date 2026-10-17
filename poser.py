@@ -14,7 +14,7 @@ from src.config import parse_args
 from src.model_manager import ModelManager
 from src.video_capture import VideoCaptureModule
 from src.person_detector import PersonDetector, PersonDetections
-from src.face_processor import FaceProcessor
+from src.face_processor import FaceProcessor, face_box_from_pose
 from src.hand_processor import HandProcessor
 from src.body_processor import BodyProcessor
 from src.renderer import Renderer
@@ -68,6 +68,17 @@ def _moved_face(face: FaceResult, old_head: BoundingBox, new_head: BoundingBox) 
                  for lm in face.landmarks]
     return FaceResult(bbox=new_head, landmarks=landmarks, blendshapes=face.blendshapes,
                       person_id=face.person_id, presence=face.presence)
+
+
+def _face_box(body: Optional[BodyResult], head: Optional[BoundingBox], frame_w: int, frame_h: int
+              ) -> Optional[BoundingBox]:
+    """Where to run the face model for a person: around the pose's face points when there is a pose (issue #13: a
+    body always has a head, and the detector's head box is missing in a third of frames), else the head box."""
+    if body is not None:
+        box = face_box_from_pose(body.landmarks)
+        if box.w >= 1 and box.x < frame_w and box.y < frame_h and box.x + box.w > 0 and box.y + box.h > 0:
+            return box
+    return head
 
 
 def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies, cs_x: float, cs_y: float,
@@ -341,7 +352,7 @@ def main():
         track_ids: List[int] = []
         id_labels = []  # (track id, body box) for --show-ids
         seen = {}  # (track id, part) -> this frame's result (a face with its head box), for ghosts
-        heads_now = {}  # track id -> head box this frame, to move a ghost face with its head
+        heads_now = {}  # track id -> face crop this frame, to move a ghost face with the head
 
         if person_proc:
             t = time.perf_counter()
@@ -371,36 +382,47 @@ def main():
             counts['still'] += len(confirmed) - len(people)
             heads = _assign_heads([box for _, box in people], detections.head_boxes)
             counts['people'] += len(people)
+            # Every person's pose first: their face crop comes from it (issue #13).
+            bodies = [None] * len(people)
+            if body_proc:
+                t = time.perf_counter()
+                for k, (track, body_bbox) in enumerate(people):
+                    bodies[k] = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror,
+                                                  roi=body_rois.get(track.id))
+                    body_rois[track.id] = bodies[k].roi if bodies[k] is not None else None
+                stage_ms['body'] += (time.perf_counter() - t) * 1000
+            face_boxes = [_face_box(body, head, frame_w, frame_h) for body, head in zip(bodies, heads)]
             # Every person's face goes through the face model in one run (cheaper per face on the Orin).
             faces_by_person = {}  # index in people -> (FaceResult or None, face logit)
             if face_proc:
-                with_head = [k for k, head in enumerate(heads) if head is not None]
-                if with_head:
+                with_box = [k for k, box in enumerate(face_boxes) if box is not None]
+                if with_box:
                     t = time.perf_counter()
-                    faces = face_proc.process_many(frame_gpu, [heads[k] for k in with_head], frame_w, frame_h,
+                    faces = face_proc.process_many(frame_gpu, [face_boxes[k] for k in with_box], frame_w, frame_h,
                                                    config.mirror)
-                    faces_by_person = dict(zip(with_head, zip(faces, face_proc.last_logits)))
+                    faces_by_person = dict(zip(with_box, zip(faces, face_proc.last_logits)))
                     stage_ms['face'] += (time.perf_counter() - t) * 1000
-                    counts['faces_run'] += len(with_head)
+                    counts['faces_run'] += len(with_box)
             for k, ((track, body_bbox), head_bbox) in enumerate(zip(people, heads)):
                 person_id = track.id
                 still = track.is_still()
-                face = face_logit = body = None
-                if head_bbox is not None:
-                    heads_now[person_id] = head_bbox
+                face = face_logit = None
+                body = bodies[k]
+                if face_boxes[k] is not None:
+                    heads_now[person_id] = face_boxes[k]
 
                 if k in faces_by_person:
                     face, face_logit = faces_by_person[k]  # logit also for rejected faces, in [TRACK] lines
                     if face is not None:
                         face.person_id = person_id
                         all_face_results.append(face)
-                        seen[(person_id, 'face')] = (face, head_bbox)
+                        seen[(person_id, 'face')] = (face, face_boxes[k])
                         face_logit = math.log(face.presence / max(1e-12, 1 - face.presence))
                         face_logits.append(face_logit)
                         if face.presence >= FACE_VERIFY_PRESENCE:
                             track.face_hits += 1
 
-                # A body is only drawn once the face model has clearly seen a real face in its own head box
+                # A body is only drawn once the face model has clearly seen a real face in its own face crop
                 # in a few frames. The lamp and other static false positives never show one (issue #3).
                 if require_face and track.face_hits < FACE_VERIFY_HITS:
                     if track_stats:
@@ -410,16 +432,10 @@ def main():
                 counts['drawn'] += 1
                 id_labels.append((person_id, body_bbox))
 
-                if body_proc:
-                    t = time.perf_counter()
-                    body = body_proc.process(frame_gpu, body_bbox, frame_w, frame_h, config.mirror,
-                                             roi=body_rois.get(person_id))
-                    body_rois[person_id] = body.roi if body is not None else None
-                    stage_ms['body'] += (time.perf_counter() - t) * 1000
-                    if body is not None:
-                        body.person_id = person_id
-                        all_body_results.append(body)
-                        seen[(person_id, 'body')] = body
+                if body is not None:
+                    body.person_id = person_id
+                    all_body_results.append(body)
+                    seen[(person_id, 'body')] = body
 
                 # Hands are cropped from the pose's wrists (or the hand's last landmarks), so they need the body.
                 if hand_proc and body is not None:

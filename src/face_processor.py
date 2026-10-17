@@ -8,6 +8,21 @@ from src.preprocessor import Preprocessor
 from src.topology import CANONICAL_BLENDSHAPE_INDICES
 
 
+# Face crop from the pose (issue #13): a square around the pose's face points (0-10: nose, eyes, ears, mouth), this
+# many times their larger spread. On two Orin clips it found 81% / 92% of faces, the detector's head box 50% / 58%
+# (the head box is missing in a third of frames; 1.5x: 55% / 82%, 2.5x: 70% / 89%).
+FACE_FROM_POSE_SCALE = 2.0
+
+
+def face_box_from_pose(pose, scale: float = FACE_FROM_POSE_SCALE) -> BoundingBox:
+    """The face crop for a person from their pose landmarks: a square around points 0-10, `scale` x their spread."""
+    xs = [pose[i].x for i in range(11)]
+    ys = [pose[i].y for i in range(11)]
+    side = scale * max(max(xs) - min(xs), max(ys) - min(ys))
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    return BoundingBox(cx - side / 2, cy - side / 2, side, side, 1.0)
+
+
 class FaceProcessor:
     """Runs face landmark inference on a pre-detected head bounding box.
 

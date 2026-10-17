@@ -153,3 +153,31 @@ def test_drawing_in_the_picture_area_does_not_reach_the_border():
     canvas, view = _screen_canvas(1920, 1200, 1920, 1080)
     cv2.line(view, (0, 0), (1919, 1079), (255, 255, 255), 2)
     assert canvas[60, 0].any() and not canvas[:60].any() and not canvas[1140:].any()
+
+
+def _pose_with_face(x0=100.0, y0=50.0):
+    from src.types import Landmark
+    lms = [Landmark(0.0, 0.0, 0.0) for _ in range(33)]
+    for i in range(11):
+        lms[i] = Landmark(x0 + 4 * i, y0 + i, 0.0)  # nose, eyes, ears, mouth: 40 wide, 10 high
+    return lms
+
+
+def test_face_box_from_pose_is_a_square_around_the_face_points():
+    # Issue #13 clips: crops from the pose's face points at 2x found 81% / 92% of faces, the head box 50% / 58%.
+    from src.face_processor import face_box_from_pose
+    box = face_box_from_pose(_pose_with_face(), 2.0)
+    assert (box.w, box.h) == (80, 80) and (box.x + box.w / 2, box.y + box.h / 2) == (120, 55)
+
+
+def test_face_crop_comes_from_the_pose_else_the_head_box():
+    from poser import _face_box
+    from src.types import BodyResult
+    head = _box(90, 20, 60, 70)
+    body = BodyResult(landmarks=_pose_with_face(), presence=1.0)
+    assert _face_box(body, head, 1920, 1080).w == 80          # a body: the pose's face points
+    assert _face_box(body, None, 1920, 1080).w == 80          # also when the detector found no head
+    assert _face_box(None, head, 1920, 1080) == head          # no pose: the head box
+    assert _face_box(None, None, 1920, 1080) is None
+    off = BodyResult(landmarks=_pose_with_face(x0=2500.0), presence=1.0)
+    assert _face_box(off, head, 1920, 1080) == head           # pose face outside the picture: the head box
