@@ -5,8 +5,9 @@
 Runs the detector (TensorRT on the Orin, as the app) on every frame, mirrored as the service shows it, with the
 app's input (letterboxed, RGB, 0-255) or a variant, keeps body boxes as the app does (score >= 0.3, nested boxes
 dropped) and prints: body boxes per frame, the share of frames with at least k boxes, frames with a big box
-(>= 0.7 of the frame height: someone close to the camera), frames with a lamp-like box (narrow, centre x > 1600),
-the share of frames with a box centred in each 320 px band, and the detector's ms per frame.
+(>= 0.7 of the frame height: someone close to the camera), frames with a lamp-like box (narrow, centre in the
+right sixth: x > 1600 of 1920), the share of frames with a box centred in each sixth of the width (320 px bands
+at 1920), and the detector's ms per frame. Half-size clips (testdata/clips_half) give nearly the same boxes.
 """
 import argparse
 import collections
@@ -16,6 +17,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import onnxruntime as ort
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
@@ -40,6 +42,8 @@ def main():
     p.add_argument('--no-mirror', dest='mirror', action='store_false')
     a = p.parse_args()
 
+    if detect_platform() != 'orin' and hasattr(ort, 'preload_dlls'):
+        ort.preload_dlls()  # CUDA/cuDNN from pip packages (other machines used for recall checks)
     mm = ModelManager(REPO_ROOT / 'models', platform=detect_platform(), detector=a.detector)
     sess = mm.get_session('person_detector')
     _, in_h, in_w, _ = sess.get_inputs()[0].shape
@@ -96,8 +100,8 @@ def main():
         heads += len(head_boxes)
         counts[len(bodies)] += 1
         big += any(b.h >= 0.7 * fh for b in bodies)
-        lamp += any(b.x + b.w / 2 > 1600 and b.w / b.h < 0.45 for b in bodies)
-        for band in {int((b.x + b.w / 2) // 320) for b in bodies}:
+        lamp += any(b.x + b.w / 2 > fw * 5 / 6 and b.w / b.h < 0.45 for b in bodies)
+        for band in {min(5, int((b.x + b.w / 2) * 6 // fw)) for b in bodies}:
             bands[band] += 1
 
     total = sum(k * v for k, v in counts.items())
