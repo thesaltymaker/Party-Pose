@@ -117,6 +117,21 @@ def _boxes_not_followed(body_boxes: List[BoundingBox], pose_boxes) -> List[Bound
     return [b for b in body_boxes if all(overlap_of_smaller(b, p) < 0.4 for p in pose_boxes)]
 
 
+def _big_enough(box: BoundingBox, frame_h: int, min_frac: float) -> bool:
+    """A person is near enough to draw if their box is at least min_frac of the frame height (0 = off). Orin, frame
+    1080 high: dancers 0.56-0.89, a child near the camera 0.47, people at the back of the room below that."""
+    return min_frac <= 0 or box.h >= min_frac * frame_h
+
+
+def _hand_on_own_wrist(hand: HandResult, pose, side: int, factor: float) -> bool:
+    """A hand is this person's if its wrist (hand landmark 0) is within factor x shoulder width (pose 11-12, at
+    least 10 px) of the pose wrist of that side (15 or 16). A crop chained from the hand's last landmarks can jump
+    to another person's hand when hands cross bodies."""
+    wrist = pose[15 + side]
+    max_dist = max(10.0, factor * math.hypot(pose[11].x - pose[12].x, pose[11].y - pose[12].y))
+    return math.hypot(hand.landmarks[0].x - wrist.x, hand.landmarks[0].y - wrist.y) <= max_dist
+
+
 def _dump_frame(dump_dir: Path, n: int, frame, detections, faces, hands, bodies, cs_x: float, cs_y: float,
                 track_ids: Optional[List[int]] = None) -> None:
     """Debug: save the frame with detector boxes + scores drawn, and all scores as JSON."""
@@ -220,6 +235,10 @@ def _screen_canvas(screen_w: int, screen_h: int, w: int, h: int) -> tuple:
 # replay, was never reached live. The [STAGES] log prints the live face logits (face_logit=) to set it from.
 FACE_VERIFY_PRESENCE = 0.95
 FACE_VERIFY_HITS = 2
+
+# A hand is kept if its wrist is within this many shoulder widths of the pose wrist (_hand_on_own_wrist).
+# two_people replay: median 0.08, 95% under 0.23; 0.5 rejected 1.9% of found hands (0.75: 1.3%, 1.0: 0.9%).
+HAND_WRIST_FACTOR = 0.5
 
 WINDOW_NAME = 'Poser'
 QUIT_KEYS = (ord('q'), 27)  # q or Escape
@@ -352,7 +371,7 @@ def main():
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'smooth', 'render')}
     counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'ghosts',
-                             'hands_found')}
+                             'hands_found', 'small', 'hands_off')}
     ghosts = Ghosts(config.ghost_frames)  # last results of each person's parts, redrawn dimming when missing
     flicker = FlickerCounter()  # [FLICKER] blink counts per part, printed at the end of a --video run
     frame_no = 0
@@ -416,7 +435,9 @@ def main():
                                                                  config.mirror, roi=roi)
                     body_rois[tr.id] = body.roi if body is not None else None
                     if body is not None:
-                        poses.append((tr.id, _pose_box(body, frame_w, frame_h)))
+                        box = _pose_box(body, frame_w, frame_h)
+                        if _big_enough(box, frame_h, config.min_body_height):  # too far back: not followed
+                            poses.append((tr.id, box))
                 stage_ms['body'] += (time.perf_counter() - t) * 1000
             followed = _follow_boxes(poses)
             for tid in pre_bodies:
@@ -443,6 +464,10 @@ def main():
             people = sorted(((tr, box) for tr, box in confirmed if not (config.drop_still and tr.is_still())),
                             key=lambda p: (-p[0].age, p[0].id))
             counts['still'] += len(confirmed) - len(people)
+            # --min-body-height: people far back in the room get no models and are not drawn.
+            near = [(tr, box) for tr, box in people if _big_enough(box, frame_h, config.min_body_height)]
+            counts['small'] += len(people) - len(near)
+            people = near
             heads = _assign_heads([box for _, box in people], detections.head_boxes)
             counts['people'] += len(people)
             # Every person's pose first: their face crop comes from it (issue #13).
@@ -507,6 +532,12 @@ def main():
                 if hand_proc and body is not None:
                     t = time.perf_counter()
                     hands = hand_proc.process(frame_gpu, body.landmarks, hand_rois.get(person_id, (None, None)))
+                    # A hand is kept only near this person's pose wrist; a rejected one is searched again from
+                    # the pose wrist next frame.
+                    kept = [h if h is not None and _hand_on_own_wrist(h, body.landmarks, side, HAND_WRIST_FACTOR)
+                            else None for side, h in enumerate(hands)]
+                    counts['hands_off'] += sum(h is not None for h in hands) - sum(h is not None for h in kept)
+                    hands = kept
                     hand_rois[person_id] = tuple(h.roi if h is not None else None for h in hands)
                     for side, hand in enumerate(hands):
                         if hand is not None:
