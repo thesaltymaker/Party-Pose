@@ -76,6 +76,22 @@ def forearm_roi(pose, side: int, size: float, ahead: float = 0.3):
     return float(c[0]), float(c[1]), size * length, Preprocessor.roi_from_alignment(e, w)[3]
 
 
+def shoulder_roi(pose, side: int, size: float, ahead: float = 0.2):
+    """A square crop sized from the shoulder width (it doesn't shrink when the forearm points at the camera):
+    `size` shoulder widths wide, centred `ahead` shoulder widths past the wrist along the elbow-to-wrist direction
+    (straight up when the forearm is too short to give one), turned that way."""
+    shoulders = float(np.hypot(pose[11].x - pose[12].x, pose[11].y - pose[12].y))
+    if shoulders < 1:
+        return None
+    e = np.array([pose[13 + side].x, pose[13 + side].y])
+    w = np.array([pose[15 + side].x, pose[15 + side].y])
+    d = w - e
+    n = float(np.hypot(*d))
+    u = d / n if n > 0.1 * shoulders else np.array([0.0, -1.0])
+    c = w + u * ahead * shoulders
+    return float(c[0]), float(c[1]), size * shoulders, Preprocessor.roi_from_alignment(w, w + u)[3]
+
+
 HAND_CROPS = {
     'app': hand_roi_from_pose,
     'fingers2.5': lambda pose, side: fingers_roi(pose, side, 2.5),
@@ -83,7 +99,11 @@ HAND_CROPS = {
     'forearm0.8': lambda pose, side: forearm_roi(pose, side, 0.8),
     'forearm1.0': lambda pose, side: forearm_roi(pose, side, 1.0),
     'forearm1.3': lambda pose, side: forearm_roi(pose, side, 1.3),
-    'forearm1.0far': lambda pose, side: forearm_roi(pose, side, 1.0, ahead=0.5),
+    'forearm1.6': lambda pose, side: forearm_roi(pose, side, 1.6),
+    'shoulder0.6': lambda pose, side: shoulder_roi(pose, side, 0.6),
+    'shoulder0.8': lambda pose, side: shoulder_roi(pose, side, 0.8),
+    'shoulder1.0': lambda pose, side: shoulder_roi(pose, side, 1.0),
+    'shoulder0.8near': lambda pose, side: shoulder_roi(pose, side, 0.8, ahead=0.1),
 }
 
 

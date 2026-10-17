@@ -34,3 +34,12 @@ def test_forearm_crop_is_past_the_wrist_and_sized_from_the_forearm():
     cx, cy, size, angle = forearm_roi(pose, 0, 1.0)
     assert (round(cx), round(cy), round(size)) == (100, 230, 100)
     assert abs(abs(angle) - math.pi) < 1e-6  # the forearm (elbow to wrist) points down: the crop is turned over
+
+
+def test_shoulder_crop_keeps_its_size_when_the_forearm_points_at_the_camera():
+    from tools.orin_bench.face_hand_scores import shoulder_roi
+    pose = _pose()  # shoulders 80 apart
+    pose[13], pose[15] = Landmark(120.0, 180.0, 0.0), Landmark(121.0, 181.0, 0.0)  # forearm almost a point
+    cx, cy, size, angle = shoulder_roi(pose, 0, 0.8)
+    assert round(size) == 64 and (round(cx), round(cy)) == (121, 165)  # straight up from the wrist, 0.2 x 80
+    assert abs(angle) < 1e-6
