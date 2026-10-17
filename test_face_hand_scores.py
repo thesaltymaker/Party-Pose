@@ -43,3 +43,11 @@ def test_shoulder_crop_keeps_its_size_when_the_forearm_points_at_the_camera():
     cx, cy, size, angle = shoulder_roi(pose, 0, 0.8)
     assert round(size) == 64 and (round(cx), round(cy)) == (121, 165)  # straight up from the wrist, 0.2 x 80
     assert abs(angle) < 1e-6
+
+
+def test_search_tries_the_wrist_crop_and_four_moved_copies():
+    from tools.orin_bench.face_hand_scores import search_rois
+    rois = search_rois(_pose(), 0, 1.0, 0.4)  # shoulders 80 apart: moves of 32 px
+    centres = sorted((round(r[0] - rois[0][0]), round(r[1] - rois[0][1])) for r in rois)
+    assert centres == sorted([(0, 0), (0, -32), (0, 32), (-32, 0), (32, 0)])
+    assert all(r[2] == rois[0][2] for r in rois)

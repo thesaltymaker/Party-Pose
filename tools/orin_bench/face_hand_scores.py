@@ -92,6 +92,20 @@ def shoulder_roi(pose, side: int, size: float, ahead: float = 0.2):
     return float(c[0]), float(c[1]), size * shoulders, Preprocessor.roi_from_alignment(w, w + u)[3]
 
 
+def shifted(roi, dx: float, dy: float):
+    return None if roi is None else (roi[0] + dx, roi[1] + dy, roi[2], roi[3])
+
+
+def search_rois(pose, side: int, size: float = 1.0, step: float = 0.4):
+    """The shoulder-sized crop at the wrist and 4 copies moved `step` shoulder widths up, down, left and right:
+    when the arms cross the body the pose's wrist point lies up the forearm and one crop misses the hand."""
+    roi = shoulder_roi(pose, side, size)
+    if roi is None:
+        return []
+    d = step * roi[2] / size
+    return [roi] + [shifted(roi, dx, dy) for dx, dy in ((0, -d), (0, d), (-d, 0), (d, 0))]
+
+
 HAND_CROPS = {
     'app': hand_roi_from_pose,
     'fingers2.5': lambda pose, side: fingers_roi(pose, side, 2.5),
@@ -104,6 +118,8 @@ HAND_CROPS = {
     'shoulder0.8': lambda pose, side: shoulder_roi(pose, side, 0.8),
     'shoulder1.0': lambda pose, side: shoulder_roi(pose, side, 1.0),
     'shoulder0.8near': lambda pose, side: shoulder_roi(pose, side, 0.8, ahead=0.1),
+    'search1.0': lambda pose, side: search_rois(pose, side, 1.0),
+    'search0.8': lambda pose, side: search_rois(pose, side, 0.8, 0.3),
 }
 
 
@@ -131,6 +147,7 @@ def main() -> None:
     tracker = PersonTracker()
     body_rois, hand_rois = {}, {}
     chains = {name: {} for name in HAND_CROPS}  # crop choice -> track id -> (left, right) next-frame crops
+    runs_n = {name: 0 for name in HAND_CROPS}  # hand model runs per crop choice
     rows = []
     frame_no = 0
     with open(args.out, 'w') as out:
@@ -181,10 +198,13 @@ def main() -> None:
                         prev = chains[name].get(pid, (None, None))
                         nxt, got = [], []
                         for side in (0, 1):
-                            roi = prev[side]
-                            if roi is None and res.landmarks[15 + side].visibility >= hand.WRIST_VISIBILITY:
-                                roi = crop(res.landmarks, side)
-                            h = hand._run(frame, roi) if roi is not None and all(map(math.isfinite, roi)) else None
+                            rois = [prev[side]]
+                            if prev[side] is None and res.landmarks[15 + side].visibility >= hand.WRIST_VISIBILITY:
+                                rois = crop(res.landmarks, side)
+                                rois = rois if isinstance(rois, list) else [rois]
+                            runs = [hand._run(frame, r) for r in rois if r is not None and all(map(math.isfinite, r))]
+                            h = max(runs, key=lambda x: x.presence) if runs else None
+                            runs_n[name] += len(runs)
                             ok = h is not None and h.presence >= HAND_KEEP
                             nxt.append(h.roi if ok else None)
                             got.append(ok)
@@ -194,6 +214,7 @@ def main() -> None:
                 rows.append(row)
     cap.release()
     print(summary(rows, frame_no))
+    print('hand model runs per frame: ' + '  '.join(f'{k}={v / max(frame_no, 1):.2f}' for k, v in runs_n.items()))
 
 
 def summary(rows, frames: int) -> str:
