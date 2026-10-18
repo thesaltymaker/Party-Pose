@@ -336,9 +336,9 @@ def main():
         sys.exit(1)
 
     person_proc = PersonDetector(model_manager, config.detector_bgr, config.detector_area) if any_modality else None
-    face_proc   = FaceProcessor(model_manager, config.face_expressions) if config.face else None
-    hand_proc   = HandProcessor(model_manager) if config.hands else None
-    body_proc   = BodyProcessor(model_manager) if config.body else None
+    face_proc   = FaceProcessor(model_manager, config.face_expressions, config.face_batch) if config.face else None
+    hand_proc   = HandProcessor(model_manager, config.hand_batch) if config.hands else None
+    body_proc   = BodyProcessor(model_manager, config.pose_batch) if config.body else None
 
     tracker     = PersonTracker()
     smoother    = PoseSmoother({k: (mc, b) for k, mc, b in config.smooth_params},
@@ -389,7 +389,7 @@ def main():
     motion = MotionStats() if config.video and config.motion_stats else None  # [MOTION] line (--motion-stats)
     frame_no = 0
     face_logits: List[float] = []  # face model logits of drawn faces, for tuning FACE_VERIFY_PRESENCE
-    face_held = set()  # track ids whose face was kept last frame (--face-hold)
+    face_held = set()  # track ids whose face was kept last frame (--face-keep)
 
     dump_dir = Path(config.dump_detections) if config.dump_detections else None
     if dump_dir:
@@ -441,13 +441,19 @@ def main():
             poses = []
             if body_proc and config.follow:
                 t = time.perf_counter()
-                for tr in sorted(tracker.tracks, key=lambda tr: (-tr.age, tr.id)):
-                    roi = body_rois.get(tr.id)
-                    if not tr.confirmed or roi is None or (config.drop_still and tr.is_still()):
-                        continue
-                    roi_box = BoundingBox(roi[0] - roi[2] / 2, roi[1] - roi[2] / 2, roi[2], roi[2], 1.0)
-                    body = pre_bodies[tr.id] = body_proc.process(frame_gpu, roi_box, frame_w, frame_h,
-                                                                 config.mirror, roi=roi)
+                follow = [tr for tr in sorted(tracker.tracks, key=lambda tr: (-tr.age, tr.id))
+                          if tr.confirmed and body_rois.get(tr.id) is not None
+                          and not (config.drop_still and tr.is_still())]
+                if config.pose_batch:  # all followed people in one model run
+                    found = body_proc.process_many(frame_gpu, [body_rois[tr.id] for tr in follow])
+                for i, tr in enumerate(follow):
+                    roi = body_rois[tr.id]
+                    if config.pose_batch:
+                        body = pre_bodies[tr.id] = found[i]
+                    else:
+                        roi_box = BoundingBox(roi[0] - roi[2] / 2, roi[1] - roi[2] / 2, roi[2], roi[2], 1.0)
+                        body = pre_bodies[tr.id] = body_proc.process(frame_gpu, roi_box, frame_w, frame_h,
+                                                                     config.mirror, roi=roi)
                     body_rois[tr.id] = body.roi if body is not None else None
                     if body is not None:
                         box = _pose_box(body, frame_w, frame_h)
@@ -506,12 +512,29 @@ def main():
                 if with_box:
                     t = time.perf_counter()
                     mins = ([face_min_logit(bodies[k] and bodies[k].landmarks, people[k][0].id in face_held,
-                                            config.face_hold) for k in with_box] if config.face_hold else None)
+                                            config.face_keep) for k in with_box] if config.face_keep else None)
                     faces = face_proc.process_many(frame_gpu, [face_boxes[k] for k in with_box], frame_w, frame_h,
                                                    config.mirror, mins)
                     faces_by_person = dict(zip(with_box, zip(faces, face_proc.last_logits)))
                     stage_ms['face'] += (time.perf_counter() - t) * 1000
                     counts['faces_run'] += len(with_box)
+            def keep_hands(person_id, body, hands):
+                # A hand is kept only near this person's pose wrist; a rejected one is searched again from
+                # the pose wrist next frame.
+                kept = [h if h is not None and _hand_on_own_wrist(h, body.landmarks, side, HAND_WRIST_FACTOR)
+                        else None for side, h in enumerate(hands)]
+                counts['hands_off'] += sum(h is not None for h in hands) - sum(h is not None for h in kept)
+                hands = kept
+                hand_rois[person_id] = tuple(h.roi if h is not None else None for h in hands)
+                for side, hand in enumerate(hands):
+                    if hand is not None:
+                        hand.person_id = person_id
+                        all_hand_results.append(hand)
+                        seen[(person_id, f'hand{side}')] = hand
+                        hand_wrists[(person_id, f'hand{side}')] = body.landmarks[15 + side]  # smoothed later
+                counts['hands_found'] += sum(h is not None for h in hands)
+
+            hand_people = []  # --hand-batch: (person id, pose) whose hands run after the loop
             for k, ((track, body_bbox), head_bbox) in enumerate(zip(people, heads)):
                 person_id = track.id
                 still = track.is_still()
@@ -548,27 +571,25 @@ def main():
 
                 # Hands are cropped from the pose's wrists (or the hand's last landmarks), so they need the body.
                 if hand_proc and body is not None:
-                    t = time.perf_counter()
-                    hands = hand_proc.process(frame_gpu, body.landmarks, hand_rois.get(person_id, (None, None)))
-                    # A hand is kept only near this person's pose wrist; a rejected one is searched again from
-                    # the pose wrist next frame.
-                    kept = [h if h is not None and _hand_on_own_wrist(h, body.landmarks, side, HAND_WRIST_FACTOR)
-                            else None for side, h in enumerate(hands)]
-                    counts['hands_off'] += sum(h is not None for h in hands) - sum(h is not None for h in kept)
-                    hands = kept
-                    hand_rois[person_id] = tuple(h.roi if h is not None else None for h in hands)
-                    for side, hand in enumerate(hands):
-                        if hand is not None:
-                            hand.person_id = person_id
-                            all_hand_results.append(hand)
-                            seen[(person_id, f'hand{side}')] = hand
-                            hand_wrists[(person_id, f'hand{side}')] = body.landmarks[15 + side]  # smoothed later
-                    stage_ms['hands'] += (time.perf_counter() - t) * 1000
-                    counts['hands_found'] += sum(h is not None for h in hands)
+                    if config.hand_batch:
+                        hand_people.append((person_id, body))  # all people's hands in one run, after this loop
+                    else:
+                        t = time.perf_counter()
+                        keep_hands(person_id, body, hand_proc.process(frame_gpu, body.landmarks,
+                                                                      hand_rois.get(person_id, (None, None))))
+                        stage_ms['hands'] += (time.perf_counter() - t) * 1000
 
                 if track_stats:
                     track_stats.update(track.id, body_bbox, head_bbox is not None, face_logit, body,
                                        still=still)
+
+            if hand_people:
+                t = time.perf_counter()
+                found = hand_proc.process_many(frame_gpu, [(body.landmarks, hand_rois.get(pid, (None, None)))
+                                                           for pid, body in hand_people])
+                for (pid, body), hands in zip(hand_people, found):
+                    keep_hands(pid, body, hands)
+                stage_ms['hands'] += (time.perf_counter() - t) * 1000
 
             if track_stats and time.monotonic() - last_report >= config.track_report:
                 last_report = time.monotonic()
@@ -701,6 +722,8 @@ def main():
                 counts[k] = 0
         return True
 
+    if config.switch_ms > 0:
+        sys.setswitchinterval(config.switch_ms / 1000)
     rendered, t_start = 0, time.monotonic()
     label_t0 = None  # when the first picture was shown, for the --test-label seconds counter
     try:

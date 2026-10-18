@@ -8,7 +8,7 @@ import pytest
 
 from src.config import detect_platform
 from src.face_processor import FaceProcessor
-from src.gpu_model import gpu_model
+from src.gpu_model import gpu_batch, gpu_model
 from src.person_detector import PersonDetector
 from src.types import BoundingBox
 from src.model_manager import ModelManager
@@ -146,3 +146,50 @@ def test_detector_area_input_on_the_gpu_matches_the_numpy_path(mm, frame):
     ref = _reference_session(mm, 'person_detector').run(['batchno_classid_score_x1y1x2y2'], {'input': arr})[0]
     assert got.shape == ref.shape
     assert np.allclose(got, ref, atol=1e-3), float(np.abs(got - ref).max())
+
+@pytest.mark.parametrize('model,size,outs', [
+    ('hand_landmarks', 224, ['Identity', 'Identity_1', 'Identity_2']),
+    ('pose_landmarks', 256, ['Identity', 'Identity_1']),
+])
+def test_batched_crops_give_the_same_outputs(mm, frame, model, size, outs):
+    """--pose-batch / --hand-batch: GpuBatch on the .dynbatch.onnx copy. On the CPU the copy gives the original
+    model's outputs for each crop (to 1e-3); on the GPU a crop's outputs must not depend on its slot (same batch
+    size, so the same engine: to 1e-3). Other batch sizes are not compared here: TF32 on the laptop (and FP16 on
+    the Orin) pick other kernels per batch size, up to 7 model pixels apart on this noise frame; with TF32 off
+    they match exactly. tools/orin_bench/check_batch.py compares them on real clip frames."""
+    batch_file = MODELS / mm._MODEL_FILES[model].replace('.onnx', '.dynbatch.onnx')
+    if not batch_file.exists():
+        pytest.skip('no .dynbatch.onnx copy (tools/orin_bench/batch_model.py)')
+    Ms = [Preprocessor.roi_affine(cx, 500, 400, angle, size)
+          for cx, angle in ((900, 0.3), (300, -1.2), (1800, 2.5), (1200, 0.0), (600, 1.0))]
+    crops = np.concatenate([Preprocessor.crop_rotated_nhwc(frame, M, size).copy() for M in Ms])
+    one = ort.InferenceSession(str(MODELS / mm._MODEL_FILES[model]), providers=['CPUExecutionProvider'])
+    many = ort.InferenceSession(str(batch_file), providers=['CPUExecutionProvider']).run(outs, {'input_1': crops})
+    for k in range(len(Ms)):
+        for o, b in zip(one.run(outs, {'input_1': crops[k:k + 1]}), many):
+            assert np.allclose(b[k], o[0], atol=1e-3), (model, k, float(np.abs(b[k] - o[0]).max()))
+
+    gb = gpu_batch(mm, model, 'input_1', outs, size, 4)
+    together = gb.run(frame, Ms[:4])
+    order = [2, 0, 3, 1]
+    swapped = gb.run(frame, [Ms[k] for k in order])  # the same batch-4 engine, crops in other slots
+    for t, w in zip(together, swapped):
+        assert np.allclose(t[order], w, atol=1e-3), (model, float(np.abs(t[order] - w).max()))
+    assert [o.shape[0] for o in gb.run(frame, Ms)] == [5] * len(outs)  # 4 + 1
+
+
+def test_face_batch_sessions_give_the_same_faces(mm, frame):
+    """--face-batch: faces through a session per batch size match GpuFaceBatch (fixed batch 2). Same batch size 2
+    on the same model file: to 1e-3 on the laptop; on the Orin another engine, to 0.5 model pixels."""
+    heads = [BoundingBox(300, 200, 220, 220, 1.0), BoundingBox(1000, 300, 180, 180, 1.0)]
+    ref = FaceProcessor(mm)
+    new = FaceProcessor(mm, batch=4)
+    a = ref.process_many(frame, heads, 1920, 1080, False)
+    ref_logits = list(ref.last_logits)
+    b = new.process_many(frame, heads, 1920, 1080, False)
+    trt = 'TensorrtExecutionProvider' in mm.get_session('face_landmarks').get_providers()
+    assert np.allclose(ref_logits, new.last_logits, atol=0.05 if trt else 1e-3)
+    for fa, fb in zip(a, b):
+        assert (fa is None) == (fb is None)
+        if fa is not None:
+            assert np.allclose(fa.pts, fb.pts, atol=0.5 if trt else 1e-2)

@@ -1,4 +1,4 @@
-"""--face-hold: a face kept last frame stays while its logit is above a lower value and the head is not turned away."""
+"""--face-keep: a face kept last frame stays while its logit is above a lower value and the head is not turned away."""
 import numpy as np
 
 from src.face_processor import FaceProcessor, face_min_logit, head_turn

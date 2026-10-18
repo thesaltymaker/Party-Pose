@@ -99,6 +99,99 @@ class GpuModel:
         return [v.numpy() for v in self._out]
 
 
+def gpu_batch(model_manager, model: str, input_name: str, outputs: List[str], size: int, slots: int) -> 'GpuBatch':
+    """The one GpuBatch for this model (created on first use)."""
+    models = model_manager.__dict__.setdefault('_gpu_models', {})
+    if model + '_batch' not in models:
+        models[model + '_batch'] = GpuBatch(model_manager, model, input_name, outputs, size, slots)
+    return models[model + '_batch']
+
+
+class GpuBatch:
+    """GpuModel for up to `slots` rotated crops in one run (--pose-batch, --hand-batch), on the model's
+    .dynbatch.onnx copy (tools/orin_bench/batch_model.py). n crops run in a session built for exactly n (one per
+    batch size, each with its own engine and buffers), so the Orin's TensorRT sessions each replay one CUDA graph
+    and no model time goes to empty slots: a fixed batch of 4 poses and 8 hands with 2 people dropped
+    three_dancers from 29.8 to 26.9 FPS. More crops than slots run `slots` at a time."""
+
+    def __init__(self, model_manager, model: str, input_name: str, outputs: List[str], size: int, slots: int) -> None:
+        self.model_manager, self.model = model_manager, model
+        self.input_name, self.outputs, self.size, self.slots = input_name, outputs, size, slots
+        self.session = model_manager.get_session(model)  # only to see the providers
+        self.on_gpu = any(p in self.session.get_providers()
+                          for p in ('TensorrtExecutionProvider', 'CUDAExecutionProvider'))
+        self._runs = {}  # batch size -> (session, I/O binding, bound input buffer, bound outputs)
+        if not self.on_gpu:
+            return
+        self._stream = cv2.cuda.Stream.Null()
+        self._warp = [cv2.cuda_GpuMat(size, size, cv2.CV_8UC3) for _ in range(slots)]
+        self._rgb = [cv2.cuda_GpuMat(size, size, cv2.CV_8UC3) for _ in range(slots)]
+
+    def _session(self, n: int) -> tuple:
+        if n not in self._runs:
+            size = self.size
+            session = self.model_manager.get_batch_session(self.model, n)
+            if not self.on_gpu:
+                self._runs[n] = (session, None, None, None)
+                return self._runs[n]
+            buf = cv2.cuda.createContinuous(n * size, size, cv2.CV_32FC3, cv2.cuda_GpuMat())
+            binding = session.io_binding()
+            binding.bind_input(self.input_name, 'cuda', 0, np.float32, [n, size, size, 3], buf.cudaPtr())
+            meta = {o.name: o.shape for o in session.get_outputs()}
+            out = []
+            for name in self.outputs:
+                v = ort.OrtValue.ortvalue_from_shape_and_type([n] + [d if isinstance(d, int) else 1 for d in meta[name][1:]],
+                                                              np.float32, 'cuda', 0)
+                binding.bind_ortvalue_output(name, v)
+                out.append(v)
+            self._runs[n] = (session, binding, buf, out)
+        return self._runs[n]
+
+    def run(self, frame_gpu: cv2.cuda_GpuMat, Ms: List[np.ndarray]) -> List[np.ndarray]:
+        """The model's outputs [len(Ms), ...] for the rotated crops given by Preprocessor.roi_affine."""
+        outs = []
+        for i in range(0, len(Ms), self.slots):
+            outs.append(self._run(frame_gpu, Ms[i:i + self.slots]))
+        return [np.concatenate(o) for o in zip(*outs)] if outs else []
+
+    def run_rects(self, frame_gpu: cv2.cuda_GpuMat, rects) -> List[np.ndarray]:
+        """The model's outputs [len(rects), ...] for (x, y, w, h) frame rectangles resized to the input, as
+        GpuFaceBatch cuts them (--face-batch)."""
+        outs = []
+        for i in range(0, len(rects), self.slots):
+            outs.append(self._run(frame_gpu, rects[i:i + self.slots], rects=True))
+        return [np.concatenate(o) for o in zip(*outs)] if outs else []
+
+    def _run(self, frame_gpu, Ms, rects: bool = False) -> List[np.ndarray]:
+        n, size = len(Ms), self.size
+        session, binding, buf, out = self._session(n)
+        if rects:
+            for k, (x, y, w, h) in enumerate(Ms):
+                roi = cv2.cuda_GpuMat(frame_gpu, (int(x), int(y), int(w), int(h)))
+                self._warp[k] = cv2.cuda.resize(roi, (size, size), self._warp[k])
+                self._rgb[k] = cv2.cuda.cvtColor(self._warp[k], cv2.COLOR_BGR2RGB, self._rgb[k])
+                slot = buf.rowRange(k * size, (k + 1) * size)
+                if self._rgb[k].convertTo(cv2.CV_32FC3, slot, 1 / 255.0, 0.0).cudaPtr() != slot.cudaPtr():
+                    raise RuntimeError('crop was not written into the bound GPU batch buffer')
+            self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
+            session.run_with_iobinding(binding)
+            return [v.numpy() for v in out]
+        if not self.on_gpu:
+            batch = np.concatenate([Preprocessor.crop_rotated_nhwc(frame_gpu, M, size).copy() for M in Ms])
+            return session.run(self.outputs, {self.input_name: batch})
+        for k, M in enumerate(Ms):
+            # Use the returned GpuMats: on the Orin's OpenCV build dst is not always written in place.
+            self._warp[k] = cv2.cuda.warpAffine(frame_gpu, cv2.invertAffineTransform(M), (size, size), self._warp[k],
+                                                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            self._rgb[k] = cv2.cuda.cvtColor(self._warp[k], cv2.COLOR_BGR2RGB, self._rgb[k])
+            slot = buf.rowRange(k * size, (k + 1) * size)
+            if self._rgb[k].convertTo(cv2.CV_32FC3, slot, 1 / 255.0, 0.0).cudaPtr() != slot.cudaPtr():
+                raise RuntimeError('crop was not written into the bound GPU batch buffer')
+        self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
+        session.run_with_iobinding(binding)
+        return [v.numpy() for v in out]
+
+
 class GpuFaceBatch:
     """The face model on up to SLOTS head crops per run, cut, resized, RGB- and float-converted on the GPU into one
     bound batch buffer (the same pixels as Preprocessor.crop_roi_nhwc with pad_fraction=0).

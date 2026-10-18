@@ -27,7 +27,7 @@ class Config:
     min_body_height: float = 0.40  # don't draw people whose box is under this fraction of the frame height (0 = off)
     test_label: str = ""        # live tests: text and a seconds counter drawn at the top of the screen
     ghost_frames: int = 5       # frames a missing body, face or hand is redrawn, dimming (issue #13; 0 = off)
-    face_hold: float = 0.0      # a face kept last frame stays down to this face logit (0 = off: presence 0.5)
+    face_keep: float = 0.0      # a face kept last frame stays down to this face logit (0 = off: presence 0.5)
     smooth: bool = True         # smooth landmarks across frames (--no-smooth for A/B tests)
     follow: bool = True         # keep a found person by their pose model, not the detector (--no-follow for A/B tests)
     pipeline: bool = False      # run the next frame's models while this frame is drawn (one frame later on screen)
@@ -42,6 +42,10 @@ class Config:
     hold_joints: int = 0        # frames a lost body joint is held at its last place, dimming (0 = hidden at once)
     score_smooth: float = 0.0   # weight of the new value when averaging body joint presence/visibility (0 = off)
     smooth_params: tuple = ()   # ((kind, min_cutoff, beta), ...) One Euro settings per part kind, others default
+    pose_batch: int = 0         # followed people's poses in one model run of this many crops (0 = one run each)
+    hand_batch: int = 0         # all people's hands in model runs of this many crops (0 = one run per hand)
+    face_batch: int = 0         # faces in model runs of up to this many, a session per batch size (0 = always batch 2)
+    switch_ms: float = 0.0      # Python thread switch interval in ms (0 = Python's default, 5 ms)
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -91,7 +95,7 @@ def parse_args() -> Config:
     parser.add_argument("--ghost-frames", type=int, default=5, metavar="N",
                         help="When a tracked person's body, face or hand is missing, redraw its last result "
                              "for N-1 frames, dimming, then drop it (default 5 = 1/6 s at 30 FPS; 0 = off)")
-    parser.add_argument("--face-hold", type=float, default=0.0, metavar="LOGIT",
+    parser.add_argument("--face-keep", type=float, default=0.0, metavar="LOGIT",
                         help="A face kept last frame is kept while its face logit stays at or above LOGIT and the "
                              "pose's head is not turned away (e.g. -8; default 0 = off, presence 0.5 every frame)")
     parser.add_argument("--video", default=None, metavar="CLIP",
@@ -128,6 +132,18 @@ def parse_args() -> Config:
     for kind in ('body', 'face', 'hand'):
         parser.add_argument(f"--smooth-{kind}", default="", metavar="MIN_CUTOFF,BETA",
                             help=f"One Euro filter settings for {kind} landmarks (default 0.3,1.5)")
+    parser.add_argument("--pose-batch", type=int, default=0, metavar="N",
+                        help="Run the followed people's pose model together, N crops per run (needs "
+                             "models/pose_landmarks_detector_opset15.dynbatch.onnx, tools/orin_bench/batch_model.py; 0 = off)")
+    parser.add_argument("--hand-batch", type=int, default=0, metavar="N",
+                        help="Run all people's hands together, N crops per run (needs "
+                             "models/hand_landmarks_detector_opset15.dynbatch.onnx; 0 = off)")
+    parser.add_argument("--face-batch", type=int, default=0, metavar="N",
+                        help="Run up to N faces per face model run, with a TensorRT session for each batch size "
+                             "(0 = runs of 2, the second slot unused with one face)")
+    parser.add_argument("--switch-ms", type=float, default=0.0, metavar="MS",
+                        help="Python's thread switch interval: with --pipeline, how long the model thread may wait "
+                             "for the drawing thread to let go of the interpreter (0 = Python's default, 5 ms)")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
@@ -167,7 +183,7 @@ def parse_args() -> Config:
         drop_still=args.drop_still,
         min_body_height=args.min_body_height,
         ghost_frames=args.ghost_frames,
-        face_hold=args.face_hold,
+        face_keep=args.face_keep,
         test_label=args.test_label,
         smooth=args.smooth,
         follow=args.follow,
@@ -184,4 +200,8 @@ def parse_args() -> Config:
         score_smooth=args.score_smooth,
         smooth_params=tuple((kind, *map(float, v.split(','))) for kind in ('body', 'face', 'hand')
                             if (v := getattr(args, f'smooth_{kind}'))),
+        pose_batch=args.pose_batch,
+        hand_batch=args.hand_batch,
+        face_batch=args.face_batch,
+        switch_ms=args.switch_ms,
     )
