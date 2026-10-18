@@ -89,6 +89,16 @@ def run_face(session, frame_gpu, crop):
     return float(logit.reshape(-1)[0]), raw @ M[:, :2].T + M[:, 2]
 
 
+def agreement(pts: np.ndarray, pose) -> float:
+    """How far the face landmarks' nose, eyes and mouth corners lie from the pose's (0, 2, 5, 9, 10): mean distance
+    in spreads of the pose's face points 0-10 (left and right matched either way)."""
+    p = np.array([(pose[i].x, pose[i].y) for i in (0, 2, 5, 9, 10)])
+    f = np.array([pts[1], pts[[33, 133]].mean(axis=0), pts[[362, 263]].mean(axis=0), pts[61], pts[291]])
+    spread = max(np.ptp([pose[i].x for i in range(11)]), np.ptp([pose[i].y for i in range(11)]), 1.0)
+    d = lambda order: np.linalg.norm(f[order] - p, axis=1).mean()  # noqa: E731
+    return float(min(d([0, 1, 2, 3, 4]), d([0, 2, 1, 4, 3])) / spread)
+
+
 def head_turn(pose) -> float:
     ears = pose[7].x - pose[8].x
     if abs(ears) < 1:
@@ -137,7 +147,7 @@ def main() -> None:
                 pose = res.landmarks
                 fb = face_box_from_pose(pose)
                 row = {'frame': frame_no, 'id': pid, 'body_h': round(box.h), 'cx': round(box.x + box.w / 2),
-                       'head': head is not None, 'vis': [round(pose[i].visibility, 2) for i in range(11)],
+                       'head': head is not None, 'box': [round(fb.x), round(fb.y), round(fb.w)], 'vis': [round(pose[i].visibility, 2) for i in range(11)],
                        'turn': round(head_turn(pose), 2), 'spread': round(fb.w / 2.0, 1),
                        'eye_deg': round(math.degrees(eye_angle(pose)), 1)}
                 lg = {}
@@ -146,7 +156,9 @@ def main() -> None:
                 for c in CENTRES:
                     for s in SCALES:
                         for r in ROTS:
-                            lg[f'{c}-{s}-{r}'] = run_face(session, frame, pose_crop(pose, c, s, r))[0]
+                            lg[f'{c}-{s}-{r}'], pts = run_face(session, frame, pose_crop(pose, c, s, r))
+                            if (c, s, r) == ('mid', 2.0, '0'):
+                                row['agree'] = round(agreement(pts, pose), 3)
                 if pid in last_face:
                     pts, nose = last_face[pid]
                     cx, cy, side, a = landmark_crop(pts)
@@ -154,6 +166,7 @@ def main() -> None:
                 else:
                     crop = pose_crop(pose, 'face', 2.0, 'eyes')
                 lg['track'], pts = run_face(session, frame, crop)
+                row['agree_track'] = round(agreement(pts, pose), 3)
                 if lg['track'] >= 0:
                     last_face[pid] = (pts, (pose[0].x, pose[0].y))
                 else:
