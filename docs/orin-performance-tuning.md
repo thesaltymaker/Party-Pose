@@ -41,6 +41,12 @@ techniques, with what each one gave.
 | One model run per hand per frame (retry a lost hand on the next frame) | `HandProcessor.process` | hand time 2.5 -> 1.9 ms/person, 92% -> 89% found |
 | FP16 TensorRT engines with a cache (`trt_fp16_enable`, `trt_engine_cache_enable`) | `ModelManager` | already on before; keep |
 
+| **Load every session at startup** (each batch size too) | `poser._load_sessions` | no 1-3 s freeze when a new number of people appears; replays no longer count the load |
+| **Batch per batch size** (`--pose-batch 4 --hand-batch 4 --face-batch 4`, one TensorRT session per size) | `GpuBatch` | +2.2 FPS with 3-4 people |
+| **Hands and faces every 2nd frame per person** (`--hand-every 2 --face-every 2`) | `ghosts.skip_turn` | +1.2-1.4 FPS, fewer blinks |
+| **Person detector every 3rd frame while everyone is followed** (`--detect-every 3`) | `poser._detect_now` | +1.2 FPS |
+| Python fixes found with py-spy (ghost face moved when read, `is_still()` every 10th box) | `poser._MovedLandmarks`, `Track.is_still` | +2 FPS with 4 people |
+
 What did not pay: moving the crop to the CPU (2.2 ms vs 0.8 on the GPU); a second CUDA graph per batch size (wrong outputs, see below).
 
 ## 4. Pitfalls that cost time
@@ -56,6 +62,6 @@ What did not pay: moving the crop to the CPU (2.2 ms vs 0.8 on the GPU); a secon
 - **`jtop` shows the system OpenCV (4.8.0, no CUDA)**; the app's venv loads the CUDA build through `00-opencv-cuda.pth`. Check with the venv's python.
 - **Commands over ssh**: `pkill -f poser.py` and `grep poser.py` match their own `bash -c`; use `pgrep -f "^/home/thesa/Projects/Party-Pose/env/bin/python poser.py"`. Long runs: `nohup ... & disown` and a done marker written even on failure.
 
-## 5. Where the time is now (two people, `--mirror --pipeline`, ~28 ms model thread)
+## 5. Where the time is now (three dancers, the service arguments, ~29 ms model thread, 2026-10-18)
 
-person detector ~7.6 ms (part runs outside TensorRT, no graph), body ~5.3, face ~5.3, hands ~4.5, capture ~1.9, smoothing ~1.2; drawing ~8.7 ms in the other thread. Next candidates: the detector's non-TensorRT tail (NMS on CUDA/CPU), the 478 Landmark objects per face, and a third pipeline stage (detector of frame N+1 while landmarks of frame N run).
+body ~8.2 ms (3 poses in one run), hands ~6.2, face ~6.3, person detector ~4.2 (every 3rd frame while everyone is followed), capture ~2.1, smoothing ~1.3; drawing ~9.7 ms in the other thread. 45% of the model thread is inside `run_with_iobinding`; much of the rest is waiting for Python's lock (three Python threads). A parallel detector stage (`--detect-ahead`) works but the GPU is shared: the other models run 25-35% slower. Next candidates: fewer model runs (a fixed batch across hands and faces), and less Python per frame in the drawing thread.
