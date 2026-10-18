@@ -100,7 +100,8 @@ class VideoCaptureModule:
             self.width  = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.mirror = config.mirror
-        self._gpu_frame = cv2.cuda_GpuMat()
+        self._gpu_frames = [cv2.cuda_GpuMat()]  # read_frame() uploads into these in turn
+        self._next = 0
         self._wb_gain = None
         if config.platform == "orin":
             self._wb_gain = cv2.cuda_GpuMat()
@@ -117,18 +118,25 @@ class VideoCaptureModule:
             if not ret:
                 raise RuntimeError('Camera read failed')
 
-        self._gpu_frame.upload(frame)
+        gpu_frame = self._gpu_frames[self._next]
+        self._next = (self._next + 1) % len(self._gpu_frames)
+        gpu_frame.upload(frame)
         if self._wb_gain is not None:
-            cv2.cuda.multiply(self._gpu_frame, self._wb_gain, self._gpu_frame, scale=1 / 128)
+            cv2.cuda.multiply(gpu_frame, self._wb_gain, gpu_frame, scale=1 / 128)
         if self.mirror:
-            cv2.cuda.flip(self._gpu_frame, 1, self._gpu_frame)
+            cv2.cuda.flip(gpu_frame, 1, gpu_frame)
 
         # Night-mode grayscale conversion
         if self._night_mode is not None and self._night_mode.update():
-            gray = cv2.cuda.cvtColor(self._gpu_frame, cv2.COLOR_BGR2GRAY)
-            self._gpu_frame = cv2.cuda.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            gray = cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGR2GRAY)
+            gpu_frame = cv2.cuda.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-        return self._gpu_frame
+        return gpu_frame
+
+    def keep_frames(self, n: int) -> None:
+        """Upload each frame into the next of N GPU buffers, so the last N frames stay valid (--detect-ahead)."""
+        self._gpu_frames = [cv2.cuda_GpuMat() for _ in range(n)]
+        self._next = 0
 
     def release(self) -> None:
         if self._cap is not None:

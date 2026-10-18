@@ -306,6 +306,10 @@ def _run_pipelined(produce, consume) -> None:
         thread.join(timeout=2)
 
 
+# --detect-ahead: frames in use at once: read ahead, in its queue, in the models, in the pipeline queue, drawn, + 1.
+AHEAD_FRAMES = 6
+
+
 class _Ahead:
     """--detect-ahead: run produce() in its own thread one item ahead (a one-slot queue). get() returns the next
     item, or raises the error produce() raised (EOFError at the end of a clip)."""
@@ -450,7 +454,7 @@ def main():
     def read_and_detect():
         # With FIRST_RUNS_LOCK held: no GPU allocation here while another session records its CUDA graph.
         with FIRST_RUNS_LOCK:
-            frame_gpu = capture.read_frame().clone()  # read_frame() reuses its buffer for the next frame
+            frame_gpu = capture.read_frame()  # one of AHEAD_FRAMES buffers (capture.keep_frames)
             t = time.perf_counter()
             detections = detect(frame_gpu)
             return frame_gpu, detections, (time.perf_counter() - t) * 1000
@@ -694,7 +698,7 @@ def main():
 
         if black_frame is not None:
             frame_gpu = None            # not drawn
-        elif config.pipeline and not ahead:  # --detect-ahead already copied it
+        elif config.pipeline and not ahead:  # with --detect-ahead it is one of AHEAD_FRAMES buffers
             frame_gpu = frame_gpu.clone()  # read_frame() reuses its buffer for the next frame
         return (frame_gpu, frame_w, frame_h, all_face_results, all_hand_results, all_body_results, id_labels,
                 detections, track_ids)
@@ -787,6 +791,7 @@ def main():
     label_t0 = None  # when the first picture was shown, for the --test-label seconds counter
     try:
         if config.detect_ahead and person_proc:
+            capture.keep_frames(AHEAD_FRAMES)
             ahead = _Ahead(read_and_detect)
         if config.pipeline:
             _run_pipelined(infer, render)

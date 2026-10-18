@@ -2,6 +2,7 @@
 import threading
 import time
 
+import numpy as np
 import pytest
 
 from poser import _Ahead
@@ -78,3 +79,22 @@ def test_each_session_counts_its_own_first_runs():
         gpu_model.run_bound(a, None)
     gpu_model.run_bound(b, None)
     assert b.locked == [True]
+
+
+def test_capture_can_keep_its_last_frames_in_separate_gpu_buffers(tmp_path):
+    # --detect-ahead: up to 6 frames are in use at once (read ahead, queued, models, drawing); no copy per frame.
+    from types import SimpleNamespace
+    from src.raw_video import RawVideoWriter
+    from src.video_capture import VideoCaptureModule
+    path = tmp_path / 'clip'
+    with RawVideoWriter(path, 8, 6) as w:
+        for i in range(4):
+            w.write(np.full((6, 8, 3), i, np.uint8))
+    cap = VideoCaptureModule(SimpleNamespace(platform='laptop', camera=0, mirror=False, video=str(path)))
+    cap.keep_frames(3)
+    frames = [cap.read_frame() for _ in range(3)]
+    assert [int(f.download()[0, 0, 0]) for f in frames] == [0, 1, 2]
+    ptrs = [f.cudaPtr() for f in frames]
+    assert len(set(ptrs)) == 3
+    assert cap.read_frame().cudaPtr() == ptrs[0]  # the oldest buffer is reused
+    cap.release()
