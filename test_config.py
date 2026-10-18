@@ -114,3 +114,11 @@ def test_palm_refind_is_off_unless_asked():
         assert parse_args().palm_refind is False
     with patch("sys.argv", ["poser.py", "--palm-refind"]):
         assert parse_args().palm_refind is True
+
+
+def test_palm_one_person_is_off_unless_asked():
+    from src.config import parse_args
+    with patch("sys.argv", ["poser.py", "--palm-refind"]):
+        assert parse_args().palm_one_person is False
+    with patch("sys.argv", ["poser.py", "--palm-refind", "--palm-one-person"]):
+        assert parse_args().palm_one_person is True

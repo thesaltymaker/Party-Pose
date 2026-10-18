@@ -36,6 +36,7 @@ class Config:
     detector: str = ""          # person detector model file in models/ ("" = the default YOLOX nano 320x256)
     detector_bgr: bool = False  # feed the person detector BGR (the order YOLOX was trained on) instead of RGB
     palm_refind: bool = False   # find a lost hand with the palm detector on the person's upper body
+    palm_one_person: bool = False  # with palm_refind: the palm detector for one person per frame, in turn
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -106,6 +107,8 @@ def parse_args() -> Config:
     parser.add_argument("--palm-refind", action="store_true",
                         help="When the pose crop misses a lost hand, look for it with MediaPipe's palm detector on the "
                              "person's upper body (src/palm_detector.py)")
+    parser.add_argument("--palm-one-person", action="store_true",
+                        help="With --palm-refind: run the palm detector for one person per frame, each in turn (faster)")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
@@ -155,4 +158,5 @@ def parse_args() -> Config:
         detector=args.detector,
         detector_bgr=args.detector_bgr,
         palm_refind=args.palm_refind,
+        palm_one_person=args.palm_one_person,
     )

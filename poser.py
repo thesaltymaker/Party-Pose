@@ -545,8 +545,9 @@ def main():
                     hands = kept
                     # --palm-refind: a hand that was lost and not found at the pose crop either is looked for with
                     # the palm detector on this person's upper body (one run per person and frame at most).
+                    # With --palm-one-person only the person whose turn it is this frame.
                     lost = [side for side in (0, 1) if hands[side] is None and prev_rois[side] is None]
-                    if palm_proc and lost:
+                    if palm_proc and lost and (not config.palm_one_person or k == frame_no % len(people)):
                         counts['palm_runs'] += 1
                         for side, palm in palm_proc.find(frame_gpu, body.landmarks, lost).items():
                             h = hand_proc._run(frame_gpu, palm_roi(palm))
