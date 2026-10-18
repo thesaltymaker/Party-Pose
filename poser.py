@@ -16,6 +16,7 @@ from src.video_capture import VideoCaptureModule
 from src.person_detector import PersonDetector, PersonDetections
 from src.face_processor import FaceProcessor, face_box_from_pose
 from src.hand_processor import HandProcessor
+from src.palm_detector import PalmDetector, palm_roi
 from src.body_processor import BodyProcessor
 from src.renderer import Renderer
 from src.fps_counter import FPSCounter
@@ -311,6 +312,8 @@ def main():
             required_models.append('face_blendshapes')
     if config.hands:
         required_models.append('hand_landmarks')
+        if config.palm_refind:
+            required_models.append('palm_detector')
     if config.body:
         required_models.append('pose_landmarks')
 
@@ -329,6 +332,7 @@ def main():
     person_proc = PersonDetector(model_manager, config.detector_bgr) if any_modality else None
     face_proc   = FaceProcessor(model_manager, config.face_expressions) if config.face else None
     hand_proc   = HandProcessor(model_manager) if config.hands else None
+    palm_proc   = PalmDetector(model_manager) if config.hands and config.palm_refind else None
     body_proc   = BodyProcessor(model_manager) if config.body else None
 
     tracker     = PersonTracker()
@@ -371,7 +375,7 @@ def main():
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'smooth', 'render')}
     counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'ghosts',
-                             'hands_found', 'small', 'hands_off')}
+                             'hands_found', 'small', 'hands_off', 'palm_runs', 'hands_palm')}
     ghosts = Ghosts(config.ghost_frames)  # last results of each person's parts, redrawn dimming when missing
     flicker = FlickerCounter()  # [FLICKER] blink counts per part, printed at the end of a --video run
     frame_no = 0
@@ -531,13 +535,24 @@ def main():
                 # Hands are cropped from the pose's wrists (or the hand's last landmarks), so they need the body.
                 if hand_proc and body is not None:
                     t = time.perf_counter()
-                    hands = hand_proc.process(frame_gpu, body.landmarks, hand_rois.get(person_id, (None, None)))
+                    prev_rois = hand_rois.get(person_id, (None, None))
+                    hands = hand_proc.process(frame_gpu, body.landmarks, prev_rois)
                     # A hand is kept only near this person's pose wrist; a rejected one is searched again from
                     # the pose wrist next frame.
                     kept = [h if h is not None and _hand_on_own_wrist(h, body.landmarks, side, HAND_WRIST_FACTOR)
                             else None for side, h in enumerate(hands)]
                     counts['hands_off'] += sum(h is not None for h in hands) - sum(h is not None for h in kept)
                     hands = kept
+                    # --palm-refind: a hand that was lost and not found at the pose crop either is looked for with
+                    # the palm detector on this person's upper body (one run per person and frame at most).
+                    lost = [side for side in (0, 1) if hands[side] is None and prev_rois[side] is None]
+                    if palm_proc and lost:
+                        counts['palm_runs'] += 1
+                        for side, palm in palm_proc.find(frame_gpu, body.landmarks, lost).items():
+                            h = hand_proc._run(frame_gpu, palm_roi(palm))
+                            if h is not None and _hand_on_own_wrist(h, body.landmarks, side, HAND_WRIST_FACTOR):
+                                hands[side] = h
+                                counts['hands_palm'] += 1
                     hand_rois[person_id] = tuple(h.roi if h is not None else None for h in hands)
                     for side, hand in enumerate(hands):
                         if hand is not None:

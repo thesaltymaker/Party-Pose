@@ -106,3 +106,11 @@ def test_detector_gets_rgb_unless_detector_bgr():
         assert parse_args().detector_bgr is False
     with patch("sys.argv", ["poser.py", "--detector-bgr"]):
         assert parse_args().detector_bgr is True
+
+
+def test_palm_refind_is_off_unless_asked():
+    from src.config import parse_args
+    with patch("sys.argv", ["poser.py"]):
+        assert parse_args().palm_refind is False
+    with patch("sys.argv", ["poser.py", "--palm-refind"]):
+        assert parse_args().palm_refind is True

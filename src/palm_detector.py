@@ -16,6 +16,7 @@ from typing import Dict, List, Sequence
 
 import numpy as np
 
+from src.gpu_model import gpu_model
 from src.hand_processor import Roi, _rect
 from src.preprocessor import Preprocessor
 from src.types import Landmark
@@ -131,3 +132,20 @@ def assign_palms(palms: Sequence[Palm], pose: Sequence[Landmark], sides: Sequenc
             out[s] = palms[i]
             used.add(i)
     return out
+
+
+class PalmDetector:
+    """The palm model on one person's upper body (crop `SCALE` shoulder widths wide), palms given to their arms."""
+
+    SCALE = 4.0
+
+    def __init__(self, model_manager) -> None:
+        self.model_manager = model_manager
+        self._model = None  # created on first use (loads the session)
+
+    def find(self, frame_gpu, pose: Sequence[Landmark], sides: Sequence[int]) -> Dict[int, Palm]:
+        if self._model is None:
+            self._model = gpu_model(self.model_manager, 'palm_detector', 'input_1', ['Identity', 'Identity_1'], SIZE)
+        M = Preprocessor.roi_affine(*upper_body_roi(pose, self.SCALE), SIZE)
+        boxes, logits = self._model.run(frame_gpu, M)
+        return assign_palms(decode_palms(boxes[0], logits[0], M), pose, sides)
