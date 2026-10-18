@@ -27,6 +27,7 @@ class Config:
     min_body_height: float = 0.40  # don't draw people whose box is under this fraction of the frame height (0 = off)
     test_label: str = ""        # live tests: text and a seconds counter drawn at the top of the screen
     ghost_frames: int = 5       # frames a missing body, face or hand is redrawn, dimming (issue #13; 0 = off)
+    face_hold: float = 0.0      # a face kept last frame stays down to this face logit (0 = off: presence 0.5)
     smooth: bool = True         # smooth landmarks across frames (--no-smooth for A/B tests)
     follow: bool = True         # keep a found person by their pose model, not the detector (--no-follow for A/B tests)
     pipeline: bool = False      # run the next frame's models while this frame is drawn (one frame later on screen)
@@ -85,6 +86,9 @@ def parse_args() -> Config:
     parser.add_argument("--ghost-frames", type=int, default=5, metavar="N",
                         help="When a tracked person's body, face or hand is missing, redraw its last result "
                              "for N-1 frames, dimming, then drop it (default 5 = 1/6 s at 30 FPS; 0 = off)")
+    parser.add_argument("--face-hold", type=float, default=0.0, metavar="LOGIT",
+                        help="A face kept last frame is kept while its face logit stays at or above LOGIT and the "
+                             "pose's head is not turned away (e.g. -8; default 0 = off, presence 0.5 every frame)")
     parser.add_argument("--video", default=None, metavar="CLIP",
                         help="Read a clip recorded with tools/orin_bench/record_video.py instead of the camera, "
                              "as fast as possible, and exit at its end (repeatable benchmarks)")
@@ -145,6 +149,7 @@ def parse_args() -> Config:
         drop_still=args.drop_still,
         min_body_height=args.min_body_height,
         ghost_frames=args.ghost_frames,
+        face_hold=args.face_hold,
         test_label=args.test_label,
         smooth=args.smooth,
         follow=args.follow,
