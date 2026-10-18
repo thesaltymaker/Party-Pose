@@ -127,6 +127,15 @@ def _boxes_not_followed(body_boxes: List[BoundingBox], pose_boxes) -> List[Bound
     return [b for b in body_boxes if all(overlap_of_smaller(b, p) < 0.4 for p in pose_boxes)]
 
 
+def _detect_now(frame_no: int, every: int, tracks, followed, drop_still: bool) -> bool:
+    """--detect-every: run the person detector on this frame? Every frame while a live track is not followed by
+    its pose (lost, or new and not confirmed yet; a still one with --drop-still doesn't count), else every
+    EVERY-th frame, which finds people coming in."""
+    if every <= 1 or frame_no % every == 0:
+        return True
+    return not tracks or any(tr.id not in followed and not (drop_still and tr.is_still()) for tr in tracks)
+
+
 def _big_enough(box: BoundingBox, frame_h: int, min_frac: float) -> bool:
     """A person is near enough to draw if their box is at least min_frac of the frame height (0 = off). Orin, frame
     1080 high: dancers 0.56-0.89, a child near the camera 0.47, people at the back of the room below that."""
@@ -424,7 +433,7 @@ def main():
     # Counts track extra work (false/extra detections) since face/body models run once per detected body.
     stage_ms = {k: 0.0 for k in ('capture', 'person', 'face', 'hands', 'body', 'smooth', 'render')}
     counts = {k: 0 for k in ('bodies', 'people', 'still', 'drawn', 'heads', 'hands', 'faces_run', 'ghosts',
-                             'hands_found', 'small', 'hands_off')}
+                             'hands_found', 'small', 'hands_off', 'detect_skips')}
     ghosts = Ghosts(config.ghost_frames)  # last results of each person's parts, redrawn dimming when missing
     flicker = FlickerCounter()  # [FLICKER] blink counts per part, printed at the end of a --video run
     motion = MotionStats() if config.video and config.motion_stats else None  # [MOTION] line (--motion-stats)
@@ -485,17 +494,6 @@ def main():
         heads_now = {}  # track id -> face crop this frame, to move a ghost face with the head
 
         if person_proc:
-            if ahead:
-                detections = ahead_dets
-                stage_ms['person'] += ahead_ms  # in the other thread, while the last frame's people ran here
-            else:
-                t = time.perf_counter()
-                detections = detect(frame_gpu)
-                stage_ms['person'] += (time.perf_counter() - t) * 1000
-            counts['bodies'] += len(detections.body_boxes)
-            counts['heads'] += len(detections.head_boxes)
-            counts['hands'] += len(detections.hand_boxes)
-
             # Follow found people with the pose model, as MediaPipe does: a confirmed person whose pose was found
             # last frame gets the pose model on the crop from that pose, with or without a detector box (the
             # detector misses a moving dancer in most frames). Found again: they stay matched with a box from the
@@ -528,6 +526,21 @@ def main():
                 if tid not in followed:
                     pre_bodies[tid] = None  # pose lost, or a second track on a followed person
                     body_rois[tid] = None
+            # The person detector, after following: with --detect-every N it only runs every Nth frame while
+            # everyone is followed, as nobody needs a detector box then.
+            if ahead:
+                detections = ahead_dets
+                stage_ms['person'] += ahead_ms  # in the other thread, while the last frame's people ran here
+            elif _detect_now(frame_no, config.detect_every, tracker.tracks, followed, config.drop_still):
+                t = time.perf_counter()
+                detections = detect(frame_gpu)
+                stage_ms['person'] += (time.perf_counter() - t) * 1000
+            else:
+                detections = PersonDetections()
+                counts['detect_skips'] += 1
+            counts['bodies'] += len(detections.body_boxes)
+            counts['heads'] += len(detections.head_boxes)
+            counts['hands'] += len(detections.hand_boxes)
             free_boxes = _boxes_not_followed(detections.body_boxes, followed.values())
 
             # Stable per-person IDs (and so colours) across frames (issue #6).

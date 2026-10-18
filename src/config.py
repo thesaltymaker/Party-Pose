@@ -32,6 +32,7 @@ class Config:
     follow: bool = True         # keep a found person by their pose model, not the detector (--no-follow for A/B tests)
     pipeline: bool = False      # run the next frame's models while this frame is drawn (one frame later on screen)
     detect_ahead: bool = False  # read the next frame and run the person detector on it in another thread
+    detect_every: int = 1       # person detector every Nth frame while everyone is followed (1 = every frame)
     video: Optional[str] = None  # read this raw clip (src/raw_video.py) instead of the camera, as fast as possible
     skelly: bool = False        # filled bone-coloured face with eyes, nose and mouth cut out
     santa_hat: bool = False     # Santa hat on each face
@@ -105,6 +106,9 @@ def parse_args() -> Config:
     parser.add_argument("--detect-ahead", action="store_true",
                         help="Read the next frame and run the person detector on it in its own thread, while this "
                              "frame's pose, face and hand models run")
+    parser.add_argument("--detect-every", type=int, default=1, metavar="N",
+                        help="Run the person detector only every Nth frame while every person is followed by their "
+                             "pose (not with --detect-ahead; 1 = every frame)")
     parser.add_argument("--pipeline", action="store_true",
                         help="Run the next frame's models in a worker thread while this frame is drawn "
                              "(faster; picture one frame later)")
@@ -158,6 +162,8 @@ def parse_args() -> Config:
         help="Target platform (auto detects), 'orin' for NVIDIA Jetson, 'laptop' otherwise"
     )
     args = parser.parse_args()
+    if args.detect_every > 1 and args.detect_ahead:
+        parser.error("--detect-every and --detect-ahead do not go together")
 
     # Resolve the actual platform value
     if args.platform == "auto":
@@ -193,6 +199,7 @@ def parse_args() -> Config:
         follow=args.follow,
         pipeline=args.pipeline,
         detect_ahead=args.detect_ahead,
+        detect_every=args.detect_every,
         video=args.video,
         skelly=args.skelly,
         santa_hat=args.santa_hat,
