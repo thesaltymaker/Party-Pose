@@ -35,6 +35,7 @@ class Config:
     santa_hat: bool = False     # Santa hat on each face
     detector: str = ""          # person detector model file in models/ ("" = the default YOLOX nano 320x256)
     detector_bgr: bool = False  # feed the person detector BGR (the order YOLOX was trained on) instead of RGB
+    ghost_follow_wrist: bool = False  # a ghost hand moves with its pose wrist instead of staying where it was lost
     motion_stats: bool = False  # --video: print a [MOTION] line (joint pops, jitter, lag) at the end
     hold_joints: int = 0        # frames a lost body joint is held at its last place, dimming (0 = hidden at once)
     score_smooth: float = 0.0   # weight of the new value when averaging body joint presence/visibility (0 = off)
@@ -106,6 +107,8 @@ def parse_args() -> Config:
     parser.add_argument("--detector-bgr", action="store_true",
                         help="Feed the person detector the frame in BGR order, as the model was trained, instead of RGB "
                              "(finds more people)")
+    parser.add_argument("--ghost-follow-wrist", action="store_true",
+                        help="Move a ghost hand with its person's pose wrist instead of leaving it where it was lost")
     parser.add_argument("--motion-stats", action="store_true",
                         help="With --video: print joint pops, jitter and lag of the drawn figures at the end ([MOTION])")
     parser.add_argument("--hold-joints", type=int, default=0, metavar="N",
@@ -165,6 +168,7 @@ def parse_args() -> Config:
         santa_hat=args.santa_hat,
         detector=args.detector,
         detector_bgr=args.detector_bgr,
+        ghost_follow_wrist=args.ghost_follow_wrist,
         motion_stats=args.motion_stats,
         hold_joints=args.hold_joints,
         score_smooth=args.score_smooth,

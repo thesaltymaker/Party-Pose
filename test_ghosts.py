@@ -54,3 +54,14 @@ def test_renderer_dims_a_ghost_in_its_track_colour(fade):
     Renderer().draw_body(frame, [_body(3, fade)], 400, 200)
     expected = tuple(int(c * fade) for c in PERSON_COLORS[3])
     assert tuple(frame[100, 200]) == expected  # middle of the shoulder line
+
+
+def test_ghost_hand_moves_with_its_pose_wrist():
+    from poser import _moved_hand
+    from src.types import BoundingBox, HandResult
+    lms = [Landmark(100.0 + i, 200.0, 0.0) for i in range(21)]
+    hand = HandResult(bbox=BoundingBox(100, 190, 20, 20, 1.0), landmarks=lms, person_id=2, fade=0.6)
+    moved = _moved_hand(hand, (90.0, 210.0), (120.0, 200.0))
+    assert [(lm.x, lm.y) for lm in moved.landmarks[:2]] == [(130.0, 190.0), (131.0, 190.0)]
+    assert moved.person_id == 2 and moved.fade == 0.6
+    assert hand.landmarks[0].x == 100.0  # the ghost's own result (maybe being drawn) is not changed

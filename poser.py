@@ -72,6 +72,13 @@ def _moved_face(face: FaceResult, old_head: BoundingBox, new_head: BoundingBox) 
                       person_id=face.person_id, presence=face.presence)
 
 
+def _moved_hand(hand: HandResult, old_wrist: tuple, new_wrist: tuple) -> HandResult:
+    """A ghost hand moved by how far its pose wrist moved since the hand was seen (--ghost-follow-wrist)."""
+    dx, dy = new_wrist[0] - old_wrist[0], new_wrist[1] - old_wrist[1]
+    landmarks = [Landmark(lm.x + dx, lm.y + dy, lm.z, lm.visibility, lm.presence) for lm in hand.landmarks]
+    return dataclasses.replace(hand, landmarks=landmarks, pts=None)
+
+
 def _face_box(body: Optional[BodyResult], head: Optional[BoundingBox], frame_w: int, frame_h: int
               ) -> Optional[BoundingBox]:
     """Where to run the face model for a person: around the pose's face points when there is a pose (issue #13: a
@@ -337,6 +344,7 @@ def main():
     smoother    = PoseSmoother({k: (mc, b) for k, mc, b in config.smooth_params},
                                config.score_smooth) if config.smooth else None  # smooths landmarks per person
     joint_hold  = JointHold(config.hold_joints)  # lost body joints held at their last place, dimming
+    hand_wrists = {}  # (track id, 'hand0'/'hand1') -> pose wrist landmark of the frame that hand was last seen
     body_rois   = {}  # track id -> pose crop (cx, cy, size, angle) from that person's last body landmarks
     hand_rois   = {}  # track id -> (left, right) hand crops from that person's last hand landmarks
     track_stats = TrackStats() if config.track_report > 0 else None
@@ -397,7 +405,7 @@ def main():
 
     def infer():
         """Capture a frame and run the models, tracking and smoothing on it."""
-        nonlocal frame_no, body_rois, hand_rois, last_report
+        nonlocal frame_no, body_rois, hand_rois, hand_wrists, last_report
         frame_no += 1
         t = time.perf_counter()
         frame_gpu = capture.read_frame()
@@ -460,6 +468,7 @@ def main():
             live_ids = {tr.id for tr in tracker.tracks}
             body_rois = {k: v for k, v in body_rois.items() if k in live_ids}
             hand_rois = {k: v for k, v in hand_rois.items() if k in live_ids}
+            hand_wrists = {k: v for k, v in hand_wrists.items() if k[0] in live_ids}
             for line in tracker.events:
                 print(line, flush=True)
             tracker.events.clear()
@@ -550,6 +559,7 @@ def main():
                             hand.person_id = person_id
                             all_hand_results.append(hand)
                             seen[(person_id, f'hand{side}')] = hand
+                            hand_wrists[(person_id, f'hand{side}')] = body.landmarks[15 + side]  # smoothed later
                     stage_ms['hands'] += (time.perf_counter() - t) * 1000
                     counts['hands_found'] += sum(h is not None for h in hands)
 
@@ -582,7 +592,13 @@ def main():
             elif part == 'body':
                 all_body_results.append(dataclasses.replace(item, fade=fade))
             else:
-                all_hand_results.append(dataclasses.replace(item, fade=fade))
+                hand = dataclasses.replace(item, fade=fade)
+                pose = next((b for b in all_body_results if b.person_id == person_id and b.fade >= 1.0), None)
+                if config.ghost_follow_wrist and pose is not None and (person_id, part) in hand_wrists:
+                    w = pose.landmarks[15 + int(part[-1])]
+                    old = hand_wrists[(person_id, part)]
+                    hand = _moved_hand(hand, (old.x, old.y), (w.x, w.y))
+                all_hand_results.append(hand)
             drawn[(person_id, part)] = (all_face_results if part == 'face' else all_body_results if part == 'body'
                                         else all_hand_results)[-1]
         counts['ghosts'] += len(ghosted)
