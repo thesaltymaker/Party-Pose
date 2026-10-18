@@ -604,9 +604,11 @@ def main():
             faces_by_person = {}  # index in people -> (FaceResult or None, face logit)
             if face_proc:
                 with_box = [k for k, box in enumerate(face_boxes) if box is not None]
-                for k in with_box:  # --face-every: some people keep the last face this frame (ghost at full brightness)
+                # --face-every: some people keep the last face this frame (ghost at full brightness); k + 1: a
+                # person's face runs on the frames their hands skip, so each frame has the same number of runs
+                for k in with_box:
                     key = (people[k][0].id, 'face')
-                    if skip_turn(config.face_every, frame_no, k, ghosts.fresh(key)):
+                    if skip_turn(config.face_every, frame_no, k + 1, ghosts.fresh(key)):
                         skipped.add(key)
                 with_box = [k for k in with_box if (people[k][0].id, 'face') not in skipped]
                 if with_box:
