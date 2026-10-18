@@ -87,6 +87,9 @@
 
 ## Speed and smooth figures for the party (issue #13, 2026-10-18)
 
+All numbers and tables: `docs/issue-13-party-readiness.md`.
+
+- **One replay at a time on every machine, not only the Orin.** Two measuring jobs ran 4-5 laptop replays at once: the laptop's quality numbers then varied by up to 1.5 pops/100 between identical runs and its FPS from 10 to 36. A lock (`flock /tmp/laptop_bench.lock`) fixed it. The rig (192.168.2.60) and the Spark can run model-only checks, but not the app: their OpenCV has no CUDA and the app calls `cv2.cuda` in ~57 places.
 - **Load every model session before the first frame.** Sessions were loaded on first use, and with `--pose-batch`/`--hand-batch`/`--face-batch` each batch size has its own TensorRT session: the picture froze for 1-3 s the first time 3 or 4 people were in view, and `--video` timings counted the load (py-spy: 31% of the model thread in session creation; the person detector averaged 43 ms/frame over the first 60 frames, ~3 ms after). Loading them at startup gave three_dancers 26.9 -> 30.2 FPS in the replay, and no freeze live.
 - **py-spy on the slowest clip found Python work, not model work.** A ghost face was moved by building 478 new Landmark objects every frame (~1.7 ms/frame with faces every 2nd frame): it is now moved when read. `Track.is_still()` worked out the spread of 300 box centres for every followed person every frame, because following gives a box every frame: once the 10 s window is full it is worked out every 10th box. Together +2 FPS, the same output.
 - **Run hands and faces every 2nd frame per person** (`--hand-every 2 --face-every 2`; a person's face runs on the frames their hands skip). On a skipped frame the last result is drawn at full brightness, moved with the pose wrist or head. Fewer blinks than running every frame (fewer misses to ghost), drawn jitter the same. Every 3rd frame gives +1.5 FPS more, but the raw hand points step more between model runs.

@@ -1,14 +1,45 @@
 # Poser — System Architecture
 
-> **Current pipeline (2026-09).** Sections below describe the original design, where each processor ran its own detector. The code now works like this:
->
-> 1. `PersonDetector` (YOLOX, 320×256, full frame) returns body, head and hand boxes with scores ≥ 0.3.
-> 2. `poser.py` drops body boxes that lie ≥ 50% inside a higher-scoring body box (`_drop_nested_bodies`).
-> 3. For each body box: the most confident head whose centre is inside the box (`_find_head_for_body`, none if no head is inside) and the hands near it (`_find_hands_for_body`).
-> 4. `FaceProcessor` crops the head box without padding and runs the face landmark model; the face is skipped when the model's face score, sigmoid(`Identity_1`), is below 0.5. `HandProcessor` (padding 0.8) skips a hand with presence below 0.5. `BodyProcessor` (padding 0.1, letterboxed) skips a body with pose score below 0.5.
-> 5. `person_id` is currently the body's index in the detector's output for that frame, so colors can swap between frames. Stable IDs are issue #6.
->
-> Measurements behind steps 2–4: `docs/orin-false-positives-issue-3.md`. Orin performance: `docs/orin-fps-issue-2.md`.
+## Current pipeline (2026-10, issue #13)
+
+Everything below section a. describes the original design, where each processor ran its own SSD detector. This section is how `poser.py` and `src/` work now. Measurements behind each choice: `docs/issue-13-party-readiness.md`, `docs/lessons-learned.md`, `docs/orin-performance-tuning.md`.
+
+### Threads
+
+| Thread | Work | Notes |
+|---|---|---|
+| `clip-reader` (`--video` only) | reads the raw clip from disk one frame ahead | drops each frame from the file cache (shared CPU/GPU memory on the Orin) |
+| `poser-infer` (`--pipeline`) | `infer()`: read frame, upload to the GPU, all models, tracking, smoothing, ghosts | one-slot queue to the main thread |
+| main | `render()`: draw on the CPU (one GPU download, or a black canvas with `--black-bg`), `imshow` | GTK windows must stay in one thread |
+| `poser-detect` (`--detect-ahead` only) | reads frame N+1 and runs the person detector while `poser-infer` works on frame N | not used in the service: the Orin GPU is shared and the other models slow down |
+
+### One frame in `infer()`
+
+1. **Capture**: `VideoCaptureModule.read_frame()` uploads into a `GpuMat` (a ring of 6 with `--detect-ahead`), applies white balance on the Orin, and flips it with `--mirror` (all drawing follows the flipped picture).
+2. **Person detector** (`PersonDetector`, YOLOX tiny 288x480 with NMS inside, `--detector FILE --detector-bgr --detector-area`): body, head and hand boxes. With `--detect-every N` it runs only every Nth frame while every live, non-still person was followed by their pose last frame (`_detect_now`); otherwise every frame.
+3. **Following** (`--no-follow` turns it off): each confirmed track with a pose last frame gets the pose model on the crop from that pose, with or without a detector box (`body_rois`). Detector boxes mostly inside a followed person start no second track (`_follow_boxes`, `_boxes_not_followed`).
+4. **Tracking** (`PersonTracker`): stable IDs from box IoU and centre distance with velocity; confirmed after 3 matches, kept 15 missed frames, revived within 5 s. `--drop-still`: a track whose box centres hardly moved over ~10 s (a prop such as the lamp) gets no models. `--min-body-height 0.40`: people far back are not drawn.
+5. **Pose** (`BodyProcessor`, BlazePose full 256x256): for people not followed yet, on the detector box. With `--pose-batch N` all followed people run in one model call.
+6. **Face** (`FaceProcessor`, 256x256, 478 points): the crop is a square around the pose's face points (0-10), not the head box (head boxes are missing in ~1/3 of frames). `--face-keep LOGIT` keeps a face found last frame down to a lower face logit while the head is not turned away. Faces run in batches (`--face-batch N`, or a fixed batch of 2).
+7. **Hands** (`HandProcessor`, 224x224, 21 points): cropped from the hand's last landmarks, else from the pose's wrist and finger points. A hand is kept only if its wrist is within 0.5 shoulder widths of the person's pose wrist. `--hand-batch N`: all hands in batched calls.
+8. **Every Nth frame per person** (`--hand-every N`, `--face-every N`, `ghosts.skip_turn`): a part found last frame skips its model on N-1 of N frames; people take turns, and a person's face runs on the frames their hands skip, so each frame has about the same number of model calls. A part not found last frame always runs.
+9. **Smoothing** (`PoseSmoother`): One Euro filter per landmark on the clip's or camera's clock (`--smooth-body/face/hand MIN_CUTOFF,BETA`); `--score-smooth ALPHA` averages body joint presence/visibility so one-frame dips don't hide joints. `JointHold` (`--hold-joints`) can hold lost joints (off).
+10. **Ghosts** (`Ghosts`, `--ghost-frames N`): a part missing this frame is redrawn from its last smoothed result, dimming over N frames, moved with the head (faces) or the pose wrist (hands, on skipped frames). A part skipped on purpose (step 8) is redrawn at full brightness. Moved ghost faces are a lazy sequence (`_MovedLandmarks`).
+11. Counters for replays: `[STAGES]` ms and counts per frame, `[FLICKER]` blinks (gaps of 1-5 frames per part), `[MOTION]` pops/jitter/lag (`--motion-stats`), `[NEW-ID]`, `[BENCH]`.
+
+### GPU residency and model sessions
+
+- Crops never leave the GPU: `GpuModel` (one crop), `GpuBatch` (n crops, one TensorRT session per batch size n), `GpuFaceBatch`, `GpuDetectorInput` (`src/gpu_model.py`) write the model input into a fixed continuous GPU buffer bound with ONNX Runtime I/O binding, and outputs go to fixed GPU `OrtValue`s.
+- On the Orin the landmark sessions use TensorRT FP16 with CUDA graphs: each session records its kernel launches once and replays them, which needs fixed buffer addresses and one batch size per session.
+- `_load_sessions()` loads every session (detector, landmark models, each batch size up to N) before the first frame. Loading one on first use froze the picture for 1-3 s.
+- `run_bound()` holds `FIRST_RUNS_LOCK` for a session's first 3 runs (when its CUDA graph is recorded); the `--detect-ahead` thread holds it for each frame, because a GPU allocation in another thread breaks a recording in CUDA's global capture mode.
+- OpenCV's CUDA calls run on the default stream and ONNX Runtime on its own: every bound run waits for OpenCV first (`waitForCompletion`).
+
+### Service settings (Orin, `tools/orin_setup/service/party-pose.env.example`)
+
+`--platform orin --fullscreen --fps --mirror --drop-still --black-bg --skelly --pipeline --detector yolox_t_body_head_hand_post_0299_0.4522_1x3x288x480_nhwc.onnx --detector-bgr --detector-area --face-keep -8 --score-smooth 0.05 --ghost-frames 8 --smooth-body 0.3,0.5 --smooth-face 0.3,0.5 --smooth-hand 0.3,0.5 --pose-batch 4 --hand-batch 4 --face-batch 4 --detect-every 3 --hand-every 2 --face-every 2`
+
+New options are off by default in the code, so tests and older commands keep their behaviour; the service file holds the chosen values.
 
 ## a. System Architecture
 

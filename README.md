@@ -137,13 +137,26 @@ HAND_SCORE_THR = 0.85    # Hand detection threshold
 
 ## Architecture
 
-The pipeline processes each frame through:
+`poser.py` with `src/` (see `architecture.md`, section "Current pipeline"): one YOLOX person detector finds people;
+each person is then followed with their own pose (BlazePose), the face is cropped from the pose's face points and the
+hands from the wrists or their last landmarks. Stable track IDs, One Euro smoothing, and "ghosts" (a missing part
+redrawn from its last result, dimming) keep the figures steady. With `--pipeline` the models run in a worker thread
+while the main thread draws. On the Orin, crops stay on the GPU and the landmark models run as TensorRT CUDA graphs,
+batched across people.
 
-1. **Face Detection** (SCRFD) → Face Mesh landmarks
-2. **Body Detection** (BlazePose) → Body landmarks
-3. **Hand Detection** (MediaPipe Palm) → Hand landmarks
+Options for the Orin service (all off by default; values in `tools/orin_setup/service/party-pose.env.example`):
 
-Hand detections that overlap with face regions are automatically suppressed to prevent false positives.
+| Option | What it does |
+|---|---|
+| `--detector FILE --detector-bgr --detector-area` | person detector model, fed BGR, frame shrunk by pixel averaging |
+| `--face-keep LOGIT` | keep a face found last frame down to this face logit (-8) |
+| `--score-smooth A`, `--smooth-body/face/hand MIN_CUTOFF,BETA`, `--ghost-frames N` | smooth figures, fewer blinks |
+| `--pose-batch N --hand-batch N --face-batch N` | run all people's poses, hands, faces in batched model calls |
+| `--detect-every N` | person detector every Nth frame while everyone is followed |
+| `--hand-every N --face-every N` | each person's hands/face model every Nth frame, last result drawn between |
+| `--video CLIP`, `--motion-stats`, `--test-label TEXT` | replay a recorded clip; joint pops/jitter/lag; on-screen test label |
+
+Findings behind these: `docs/issue-13-party-readiness.md`.
 
 ## Performance
 
@@ -152,7 +165,8 @@ Typical performance on NVIDIA GPUs:
 - With TensorRT: +20-30% improvement
 
 Jetson Orin Nano Super (`python poser.py --platform orin --fps`, 1080p CSI camera, all models on TensorRT):
-- ~30 FPS with one detected person, 20–25 FPS with two. Each extra detected body costs about 9 ms/frame.
+- With the service settings (2026-10-18, `--pipeline`, recorded clips): ~60-66 FPS with one person, ~42 with two,
+  ~34 with three dancers, ~31 with four people; live the camera gives 30. Details: `docs/issue-13-party-readiness.md`.
 - Needs `sudo jetson_clocks` (resets on reboot). Without it the GPU governor downclocks to about 408 MHz and inference runs about 2× slower.
 - `--fps` also prints per-stage timings (`[STAGES ms/frame]`), detections per frame and each model's execution provider (`[PROVIDERS]`).
 - Benchmark tools: `tools/orin_bench/`. Details: `docs/orin-fps-issue-2.md`.
