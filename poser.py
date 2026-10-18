@@ -494,6 +494,23 @@ def main():
         heads_now = {}  # track id -> face crop this frame, to move a ghost face with the head
 
         if person_proc:
+            # With --detect-every N the person detector runs only every Nth frame while everyone was followed last
+            # frame (has a pose crop): nobody needs a detector box then.
+            if ahead:
+                detections = ahead_dets
+                stage_ms['person'] += ahead_ms  # in the other thread, while the last frame's people ran here
+            elif _detect_now(frame_no, config.detect_every, tracker.tracks,
+                             {tid for tid, roi in body_rois.items() if roi is not None}, config.drop_still):
+                t = time.perf_counter()
+                detections = detect(frame_gpu)
+                stage_ms['person'] += (time.perf_counter() - t) * 1000
+            else:
+                detections = PersonDetections()
+                counts['detect_skips'] += 1
+            counts['bodies'] += len(detections.body_boxes)
+            counts['heads'] += len(detections.head_boxes)
+            counts['hands'] += len(detections.hand_boxes)
+
             # Follow found people with the pose model, as MediaPipe does: a confirmed person whose pose was found
             # last frame gets the pose model on the crop from that pose, with or without a detector box (the
             # detector misses a moving dancer in most frames). Found again: they stay matched with a box from the
@@ -526,21 +543,6 @@ def main():
                 if tid not in followed:
                     pre_bodies[tid] = None  # pose lost, or a second track on a followed person
                     body_rois[tid] = None
-            # The person detector, after following: with --detect-every N it only runs every Nth frame while
-            # everyone is followed, as nobody needs a detector box then.
-            if ahead:
-                detections = ahead_dets
-                stage_ms['person'] += ahead_ms  # in the other thread, while the last frame's people ran here
-            elif _detect_now(frame_no, config.detect_every, tracker.tracks, followed, config.drop_still):
-                t = time.perf_counter()
-                detections = detect(frame_gpu)
-                stage_ms['person'] += (time.perf_counter() - t) * 1000
-            else:
-                detections = PersonDetections()
-                counts['detect_skips'] += 1
-            counts['bodies'] += len(detections.body_boxes)
-            counts['heads'] += len(detections.head_boxes)
-            counts['hands'] += len(detections.hand_boxes)
             free_boxes = _boxes_not_followed(detections.body_boxes, followed.values())
 
             # Stable per-person IDs (and so colours) across frames (issue #6).
