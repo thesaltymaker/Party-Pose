@@ -300,5 +300,9 @@ class GpuDetectorInput:
         if self._padded.convertTo(cv2.CV_32FC3, self._input, 1.0, 0.0).cudaPtr() != self._input.cudaPtr():
             raise RuntimeError('detector input was not written into the bound GPU buffer')
         self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
+        # Bound again each run: the row count changes, and a binding kept from a run with 0 rows made the next run
+        # with a box fail its output copy ("CUDA failure 1: invalid argument"), live in an empty room.
+        self._binding.clear_binding_outputs()
+        self._binding.bind_output(self.output_name, 'cpu')
         self.session.run_with_iobinding(self._binding)  # no CUDA graph: no FIRST_RUNS_LOCK
         return self._binding.copy_outputs_to_cpu()[0]

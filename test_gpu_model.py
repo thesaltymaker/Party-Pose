@@ -193,3 +193,25 @@ def test_face_batch_sessions_give_the_same_faces(mm, frame):
         assert (fa is None) == (fb is None)
         if fa is not None:
             assert np.allclose(fa.pts, fb.pts, atol=0.5 if trt else 1e-2)
+
+
+TINY = 'yolox_t_body_head_hand_post_0299_0.4522_1x3x288x480_nhwc.onnx'
+PEOPLE_CLIP = Path(__file__).parent / 'testdata' / 'clips_half' / 'two_people'
+
+
+@pytest.mark.skipif(not (MODELS / TINY).exists() or not PEOPLE_CLIP.with_suffix('.bgr').exists(),
+                    reason='needs the YOLOX tiny model and a clip with people')
+def test_detector_finds_people_after_frames_with_nobody():
+    # Orin, empty room: the first frames gave 0 rows, then the first box failed in the output copy ("CUDA failure
+    # 1: invalid argument") on every later run, because the output stayed bound to the empty first result.
+    from src.raw_video import RawVideoReader
+    det = PersonDetector(ModelManager(MODELS, platform=detect_platform(), detector=TINY))
+    black = cv2.cuda_GpuMat()
+    black.upload(np.zeros((1080, 1920, 3), np.uint8))
+    for _ in range(3):
+        assert det.process(black, 1920, 1080).body_boxes == []
+    people = cv2.resize(RawVideoReader(PEOPLE_CLIP).read(), (1920, 1080))
+    g = cv2.cuda_GpuMat()
+    g.upload(people)
+    assert det.process(g, 1920, 1080).body_boxes
+    assert det.process(black, 1920, 1080).body_boxes == []
