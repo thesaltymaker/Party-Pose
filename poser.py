@@ -24,6 +24,8 @@ from src.smoothing import PoseSmoother
 from src.track_stats import TrackStats
 from src.flicker import FlickerCounter
 from src.ghosts import Ghosts
+from src.motion import MotionStats
+from src.hold import JointHold
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult, Landmark
 
 
@@ -68,6 +70,13 @@ def _moved_face(face: FaceResult, old_head: BoundingBox, new_head: BoundingBox) 
                  for lm in face.landmarks]
     return FaceResult(bbox=new_head, landmarks=landmarks, blendshapes=face.blendshapes,
                       person_id=face.person_id, presence=face.presence)
+
+
+def _moved_hand(hand: HandResult, old_wrist: tuple, new_wrist: tuple) -> HandResult:
+    """A ghost hand moved by how far its pose wrist moved since the hand was seen (--ghost-follow-wrist)."""
+    dx, dy = new_wrist[0] - old_wrist[0], new_wrist[1] - old_wrist[1]
+    landmarks = [Landmark(lm.x + dx, lm.y + dy, lm.z, lm.visibility, lm.presence) for lm in hand.landmarks]
+    return dataclasses.replace(hand, landmarks=landmarks, pts=None)
 
 
 def _face_box(body: Optional[BodyResult], head: Optional[BoundingBox], frame_w: int, frame_h: int
@@ -332,7 +341,10 @@ def main():
     body_proc   = BodyProcessor(model_manager) if config.body else None
 
     tracker     = PersonTracker()
-    smoother    = PoseSmoother() if config.smooth else None  # smooths landmarks per person across frames
+    smoother    = PoseSmoother({k: (mc, b) for k, mc, b in config.smooth_params},
+                               config.score_smooth) if config.smooth else None  # smooths landmarks per person
+    joint_hold  = JointHold(config.hold_joints)  # lost body joints held at their last place, dimming
+    hand_wrists = {}  # (track id, 'hand0'/'hand1') -> pose wrist landmark of the frame that hand was last seen
     body_rois   = {}  # track id -> pose crop (cx, cy, size, angle) from that person's last body landmarks
     hand_rois   = {}  # track id -> (left, right) hand crops from that person's last hand landmarks
     track_stats = TrackStats() if config.track_report > 0 else None
@@ -374,6 +386,7 @@ def main():
                              'hands_found', 'small', 'hands_off')}
     ghosts = Ghosts(config.ghost_frames)  # last results of each person's parts, redrawn dimming when missing
     flicker = FlickerCounter()  # [FLICKER] blink counts per part, printed at the end of a --video run
+    motion = MotionStats() if config.video and config.motion_stats else None  # [MOTION] line (--motion-stats)
     frame_no = 0
     face_logits: List[float] = []  # face model logits of drawn faces, for tuning FACE_VERIFY_PRESENCE
     face_held = set()  # track ids whose face was kept last frame (--face-hold)
@@ -393,11 +406,12 @@ def main():
 
     def infer():
         """Capture a frame and run the models, tracking and smoothing on it."""
-        nonlocal frame_no, body_rois, hand_rois, last_report
+        nonlocal frame_no, body_rois, hand_rois, hand_wrists, last_report
         frame_no += 1
         t = time.perf_counter()
         frame_gpu = capture.read_frame()
-        t_frame = time.monotonic()
+        # A replay runs faster or slower than the camera did; smoothing works in seconds, so it gets the clip's time.
+        t_frame = frame_no / capture.clip_fps if capture.clip_fps > 0 else time.monotonic()
         frame_w, frame_h = frame_gpu.size()
         stage_ms['capture'] += (time.perf_counter() - t) * 1000
 
@@ -455,6 +469,7 @@ def main():
             live_ids = {tr.id for tr in tracker.tracks}
             body_rois = {k: v for k, v in body_rois.items() if k in live_ids}
             hand_rois = {k: v for k, v in hand_rois.items() if k in live_ids}
+            hand_wrists = {k: v for k, v in hand_wrists.items() if k[0] in live_ids}
             for line in tracker.events:
                 print(line, flush=True)
             tracker.events.clear()
@@ -547,6 +562,7 @@ def main():
                             hand.person_id = person_id
                             all_hand_results.append(hand)
                             seen[(person_id, f'hand{side}')] = hand
+                            hand_wrists[(person_id, f'hand{side}')] = body.landmarks[15 + side]  # smoothed later
                     stage_ms['hands'] += (time.perf_counter() - t) * 1000
                     counts['hands_found'] += sum(h is not None for h in hands)
 
@@ -566,11 +582,13 @@ def main():
             t = time.perf_counter()
             smoother.smooth(all_face_results, all_hand_results, all_body_results, t_frame)
             stage_ms['smooth'] += (time.perf_counter() - t) * 1000
+        joint_hold.apply(all_body_results)
 
         # Ghosts (issue #13): a tracked person's part missing this frame is drawn again from its last smoothed
         # result, dimming, in the track's colour. Copies with their own brightness, so the result being drawn
         # by the other thread (--pipeline) is never changed.
         ghosted = ghosts.update(seen)
+        drawn = {key: item[0] if key[1] == 'face' else item for key, item in seen.items()}
         for (person_id, part), item, fade in ghosted:
             if part == 'face':
                 face, old_head = item
@@ -580,9 +598,19 @@ def main():
             elif part == 'body':
                 all_body_results.append(dataclasses.replace(item, fade=fade))
             else:
-                all_hand_results.append(dataclasses.replace(item, fade=fade))
+                hand = dataclasses.replace(item, fade=fade)
+                pose = next((b for b in all_body_results if b.person_id == person_id and b.fade >= 1.0), None)
+                if config.ghost_follow_wrist and pose is not None and (person_id, part) in hand_wrists:
+                    w = pose.landmarks[15 + int(part[-1])]
+                    old = hand_wrists[(person_id, part)]
+                    hand = _moved_hand(hand, (old.x, old.y), (w.x, w.y))
+                all_hand_results.append(hand)
+            drawn[(person_id, part)] = (all_face_results if part == 'face' else all_body_results if part == 'body'
+                                        else all_hand_results)[-1]
         counts['ghosts'] += len(ghosted)
         flicker.update(list(seen) + [key for key, _, _ in ghosted])
+        if motion:
+            motion.update(drawn, frame_w, frame_h)
 
         if black_frame is not None:
             frame_gpu = None            # not drawn
@@ -691,6 +719,8 @@ def main():
         print(f'[BENCH] frames={rendered} seconds={seconds:.1f} fps={rendered / seconds:.2f} '
               f'pipeline={config.pipeline} smooth={config.smooth}', flush=True)
         print(flicker.report(), flush=True)
+        if motion:
+            print(motion.report(), flush=True)
         print('[EXIT] end of video', flush=True)
     except RuntimeError as e:
         # Non-zero so the systemd service restarts after e.g. a camera read failure.

@@ -58,12 +58,14 @@ class Smoother:
         self.max_gap = max_gap
         self.filters: Dict[Hashable, _OneEuro] = {}
 
-    def __call__(self, key: Hashable, x: np.ndarray, t: float, scale: float) -> np.ndarray:
+    def __call__(self, key: Hashable, x: np.ndarray, t: float, scale: float, params=None) -> np.ndarray:
+        """params: (min_cutoff, beta) for this key instead of the smoother's own."""
         f = self.filters.get(key)
         if f is None or t - f.t > self.max_gap or f.x.shape != x.shape:
             self.filters[key] = _OneEuro(x, t)
             return x
-        return f(x, t, scale, self.min_cutoff, self.beta).copy()
+        min_cutoff, beta = params or (self.min_cutoff, self.beta)
+        return f(x, t, scale, min_cutoff, beta).copy()
 
     def prune(self, t: float) -> None:
         """Forget filters not fed for max_gap seconds."""
@@ -89,11 +91,20 @@ def _extent(pts: np.ndarray) -> float:
 
 
 class PoseSmoother:
-    """Smooths the landmarks of every face, hand and body drawn."""
+    """Smooths the landmarks of every face, hand and body drawn.
 
-    def __init__(self) -> None:
+    params: {'face' | 'hand' | 'body': (min_cutoff, beta)} for kinds filtered differently from MIN_CUTOFF/BETA.
+    score_alpha > 0: body landmark presence and visibility are averaged over frames too (exponential moving average
+    with this weight for the new value, as MediaPipe smooths visibility), so a one-frame dip doesn't hide a joint
+    or flip it dim.
+    """
+
+    def __init__(self, params=None, score_alpha: float = 0.0) -> None:
         self.smoother = Smoother()
         self._hand_slots = 0
+        self.params = params or {}
+        self.score_alpha = score_alpha
+        self.scores = {}  # body key -> (time, [N, 2] presence and visibility averages)
 
     def smooth(self, faces: List[FaceResult], hands: List[HandResult], bodies: List[BodyResult],
                t: float) -> None:
@@ -101,18 +112,31 @@ class PoseSmoother:
         for kind, results in (('face', faces), ('body', bodies)):
             for r in results:
                 self._smooth_landmarks((kind, r.person_id), r, t)
+        if self.score_alpha > 0:
+            for r in bodies:
+                self._smooth_scores(('body', r.person_id), r, t)
         used = set()
         for hand in hands:
             key = self._hand_key(hand, t, used)
             used.add(key)
             self._smooth_landmarks(key, hand, t)
         self.smoother.prune(t)
+        self.scores = {k: v for k, v in self.scores.items() if t - v[0] <= self.smoother.max_gap}
 
     def _smooth_landmarks(self, key: Hashable, result, t: float) -> None:
         if not result.landmarks:
             return
         pts = _points(result)
-        _write(result.landmarks, self.smoother(key, pts, t, _extent(pts)))
+        _write(result.landmarks, self.smoother(key, pts, t, _extent(pts), self.params.get(key[0])))
+
+    def _smooth_scores(self, key: Hashable, result, t: float) -> None:
+        new = np.array([(lm.presence, lm.visibility) for lm in result.landmarks])
+        old = self.scores.get(key)
+        if old is not None and t - old[0] <= self.smoother.max_gap and old[1].shape == new.shape:
+            new = old[1] + self.score_alpha * (new - old[1])
+        self.scores[key] = (t, new)
+        for lm, (p, v) in zip(result.landmarks, new.tolist()):
+            lm.presence, lm.visibility = p, v
 
     def _hand_key(self, hand: HandResult, t: float, used: set) -> Hashable:
         """The key of this person's nearest hand from earlier frames (wrist within one hand size), else a new one."""

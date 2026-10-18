@@ -36,6 +36,7 @@ class Landmark:
     z: float
     visibility: float = 1.0
     presence: float = 1.0
+    fade: float = 1.0  # brightness; < 1 for a lost joint held at its last place (--hold-joints)
 
 @dataclass
 class FaceResult:

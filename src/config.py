@@ -37,6 +37,11 @@ class Config:
     detector: str = ""          # person detector model file in models/ ("" = the default YOLOX nano 320x256)
     detector_bgr: bool = False  # feed the person detector BGR (the order YOLOX was trained on) instead of RGB
     detector_area: bool = False  # shrink the frame for the person detector by averaging pixels (INTER_AREA)
+    ghost_follow_wrist: bool = False  # a ghost hand moves with its pose wrist instead of staying where it was lost
+    motion_stats: bool = False  # --video: print a [MOTION] line (joint pops, jitter, lag) at the end
+    hold_joints: int = 0        # frames a lost body joint is held at its last place, dimming (0 = hidden at once)
+    score_smooth: float = 0.0   # weight of the new value when averaging body joint presence/visibility (0 = off)
+    smooth_params: tuple = ()   # ((kind, min_cutoff, beta), ...) One Euro settings per part kind, others default
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -110,6 +115,19 @@ def parse_args() -> Config:
     parser.add_argument("--detector-area", action="store_true",
                         help="Shrink the frame for the person detector by averaging pixels (INTER_AREA) instead of "
                              "INTER_LINEAR: less camera grain in a dim room")
+    parser.add_argument("--ghost-follow-wrist", action="store_true",
+                        help="Move a ghost hand with its person's pose wrist instead of leaving it where it was lost")
+    parser.add_argument("--motion-stats", action="store_true",
+                        help="With --video: print joint pops, jitter and lag of the drawn figures at the end ([MOTION])")
+    parser.add_argument("--hold-joints", type=int, default=0, metavar="N",
+                        help="Hold a lost body joint at its last place for N-1 frames, dimming, instead of hiding it "
+                             "(0 = off)")
+    parser.add_argument("--score-smooth", type=float, default=0.0, metavar="ALPHA",
+                        help="Average body joint presence and visibility over frames with this weight for the new "
+                             "value (e.g. 0.3), so one-frame dips don't hide or dim a joint (0 = off)")
+    for kind in ('body', 'face', 'hand'):
+        parser.add_argument(f"--smooth-{kind}", default="", metavar="MIN_CUTOFF,BETA",
+                            help=f"One Euro filter settings for {kind} landmarks (default 0.3,1.5)")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
@@ -160,4 +178,10 @@ def parse_args() -> Config:
         detector=args.detector,
         detector_bgr=args.detector_bgr,
         detector_area=args.detector_area,
+        ghost_follow_wrist=args.ghost_follow_wrist,
+        motion_stats=args.motion_stats,
+        hold_joints=args.hold_joints,
+        score_smooth=args.score_smooth,
+        smooth_params=tuple((kind, *map(float, v.split(','))) for kind in ('body', 'face', 'hand')
+                            if (v := getattr(args, f'smooth_{kind}'))),
     )
