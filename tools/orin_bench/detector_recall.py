@@ -39,6 +39,7 @@ def main():
     p.add_argument('--stretch', action='store_true', help='resize to the input without keeping the aspect ratio')
     p.add_argument('--gain', type=float, default=1.0, help='multiply pixel values (saturating at 255)')
     p.add_argument('--gamma', type=float, default=1.0, help='brighten dark pixels: 255 * (v / 255) ** (1 / gamma)')
+    p.add_argument('--area', action='store_true', help='shrink with INTER_AREA (averages pixels) instead of INTER_LINEAR')
     p.add_argument('--no-mirror', dest='mirror', action='store_false')
     a = p.parse_args()
 
@@ -58,6 +59,7 @@ def main():
         sx = sy = s
         nw, nh = int(round(fw * s)), int(round(fh * s))
     img = np.zeros((in_h, in_w, 3), np.uint8)
+    interp = cv2.INTER_AREA if a.area else cv2.INTER_LINEAR
 
     counts = collections.Counter()
     bands = collections.Counter()
@@ -72,9 +74,9 @@ def main():
         if a.mirror:
             frame = cv2.flip(frame, 1)
         if a.stretch:
-            img = cv2.resize(frame, (in_w, in_h), interpolation=cv2.INTER_LINEAR)
+            img = cv2.resize(frame, (in_w, in_h), interpolation=interp)
         else:
-            img[py:py + nh, px:px + nw] = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+            img[py:py + nh, px:px + nw] = cv2.resize(frame, (nw, nh), interpolation=interp)
         x = img if a.bgr else img[..., ::-1]
         if a.gain != 1.0 or a.gamma != 1.0:
             x = cv2.LUT(np.ascontiguousarray(x), lut)
@@ -109,7 +111,7 @@ def main():
     band_txt = ' '.join(f'{b * 320}:{100 * bands[b] / n:.0f}%' for b in range(6))
     warm = sorted(ms[20:]) or sorted(ms)
     print(f'[RECALL] {a.clip} detector={a.detector or "default"} input={in_w}x{in_h} bgr={a.bgr} '
-          f'stretch={a.stretch} gain={a.gain} gamma={a.gamma} frames={n}')
+          f'stretch={a.stretch} area={a.area} gain={a.gain} gamma={a.gamma} frames={n}')
     print(f'[RECALL] bodies/frame={total / n:.2f} {at_least} big={100 * big / n:.0f}% lamp={100 * lamp / n:.0f}% '
           f'heads/frame={heads / n:.2f} | bands {band_txt} | det ms mean={sum(warm) / len(warm):.2f} '
           f'p90={warm[int(0.9 * len(warm))]:.2f}')
