@@ -118,6 +118,15 @@ thread inside `run_with_iobinding`; most of the rest is waiting for Python's loc
   time matters more on screen than the average.
 - Load everything at startup, never during the show.
 
+## Live test 2026-10-18: crash with nobody drawn, fixed
+
+The first live test crashed within 2-6 s in every run, in the person detector's own model run. Bisect live on a
+room with one person sitting still (not drawn): the YOLOX nano model ran; the tiny model crashed with and without
+`--detector-bgr`/`--detector-area`, depending on the frames. Cause: the detector's I/O binding kept the output of a
+run with 0 rows, and the next run with a box failed its output copy. Fix in `GpuDetectorInput.run` (bind the output
+before each run); the room clip, 3 detector settings: no crash; 90 s live with the service settings: no crash,
+30.9 FPS; replays unchanged (three_dancers 33.88, three_people 30.91).
+
 ## Left to do
 
 - Live test with 3-4 people (full screen, `--test-label` with a seconds counter, recorded with
