@@ -6,6 +6,7 @@ import queue
 import signal
 import threading
 import time
+import traceback
 from pathlib import Path
 from collections.abc import Sequence
 from typing import List, Optional
@@ -872,6 +873,7 @@ def main():
     except RuntimeError as e:
         # Non-zero so the systemd service restarts after e.g. a camera read failure.
         print(f'Runtime error: {e}', file=sys.stderr)
+        traceback.print_exc()  # which call failed (a CUDA error names only ONNX Runtime's file)
         exit_code = 1
     finally:
         # Ignore a second SIGTERM while the camera (nvargus) is being released.
