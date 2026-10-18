@@ -56,3 +56,13 @@ This approach provides:
 - BlazePose models: [PINTO Model Zoo](https://github.com/PINTO0309/PINTO_model_zoo)
 - MediaPipe models: Converted from MediaPipe TFLite models
 - SCRFD: Face detection model
+
+## Lite pose landmark model (--pose-model)
+
+`models/pose_landmarks_detector_lite_opset15.onnx` comes from MediaPipe's `pose_landmarker_lite.task`
+(storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/), a zip holding
+`pose_landmarks_detector.tflite`. Converted in a venv with tensorflow-cpu, tf2onnx 1.17 and onnx:
+`python -m tf2onnx.convert --tflite pose_landmarks_detector.tflite --opset 15 --output pose_landmarks_detector_lite_opset15.onnx`
+(the same command on the full model's tflite gives a file of the same size as the existing one; same input
+`input_1` [1,256,256,3] and outputs Identity..Identity_4). For `--pose-batch` also run
+`tools/orin_bench/batch_model.py` on it. MediaPipe has only one hand landmark model, so there is no lite hand file.
