@@ -37,6 +37,8 @@ class Config:
     detector: str = ""          # person detector model file in models/ ("" = the default YOLOX nano 320x256)
     pose_model: str = ""        # pose landmark model file in models/ ("" = the full model)
     hand_model: str = ""        # hand landmark model file in models/ ("" = the default one)
+    hand_every: int = 0         # run each person's hand model every Nth frame, the last hands in between (0 = every frame)
+    face_every: int = 0         # the same for the face model
     detector_bgr: bool = False  # feed the person detector BGR (the order YOLOX was trained on) instead of RGB
     detector_area: bool = False  # shrink the frame for the person detector by averaging pixels (INTER_AREA)
     ghost_follow_wrist: bool = False  # a ghost hand moves with its pose wrist instead of staying where it was lost
@@ -148,6 +150,11 @@ def parse_args() -> Config:
     parser.add_argument("--face-batch", type=int, default=0, metavar="N",
                         help="Run up to N faces per face model run, with a TensorRT session for each batch size "
                              "(0 = runs of 2, the second slot unused with one face)")
+    parser.add_argument("--hand-every", type=int, default=0, metavar="N",
+                        help="Run each person's hand model every Nth frame (people take turns), redrawing the last "
+                             "hands moved with the pose wrist in between (0 = every frame)")
+    parser.add_argument("--face-every", type=int, default=0, metavar="N",
+                        help="The same for the face model; the last face moves with the head (0 = every frame)")
     parser.add_argument("--switch-ms", type=float, default=0.0, metavar="MS",
                         help="Python's thread switch interval: with --pipeline, how long the model thread may wait "
                              "for the drawing thread to let go of the interpreter (0 = Python's default, 5 ms)")
@@ -201,6 +208,8 @@ def parse_args() -> Config:
         detector=args.detector,
         pose_model=args.pose_model,
         hand_model=args.hand_model,
+        hand_every=args.hand_every,
+        face_every=args.face_every,
         detector_bgr=args.detector_bgr,
         detector_area=args.detector_area,
         ghost_follow_wrist=args.ghost_follow_wrist,

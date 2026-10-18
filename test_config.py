@@ -133,3 +133,14 @@ def test_pose_and_hand_model_files_can_be_chosen():
     assert other._MODEL_FILES["hand_landmarks"] == "h.onnx"
     assert default._MODEL_FILES["pose_landmarks"] == "pose_landmarks_detector_opset15.onnx"
     assert ModelManager._MODEL_FILES["pose_landmarks"] == default._MODEL_FILES["pose_landmarks"]
+
+
+def test_hand_and_face_every_default_to_every_frame():
+    from unittest.mock import patch
+    from src.config import parse_args
+    with patch("sys.argv", ["poser.py"]):
+        args = parse_args()
+    assert (args.hand_every, args.face_every) == (0, 0)
+    with patch("sys.argv", ["poser.py", "--hand-every", "2", "--face-every", "3"]):
+        args = parse_args()
+    assert (args.hand_every, args.face_every) == (2, 3)
