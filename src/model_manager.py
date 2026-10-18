@@ -9,6 +9,7 @@ class ModelManager:
     face_blendshapes = "face_blendshapes"
     hand_landmarks = "hand_landmarks"
     pose_landmarks = "pose_landmarks"
+    palm_detector = "palm_detector"
 
     _MODEL_FILES = {
         person_detector: "yolox_n_body_head_hand_post_0461_0.4428_1x3x256x320_float32.onnx",
@@ -16,6 +17,7 @@ class ModelManager:
         face_blendshapes: "face_blendshapes_opset15.onnx",
         hand_landmarks: "hand_landmarks_detector_opset15.onnx",
         pose_landmarks: "pose_landmarks_detector_opset15.onnx",
+        palm_detector: "hand_detector_opset15.onnx",  # --palm-refind (src/palm_detector.py)
     }
 
     _TRT_MODEL_FILE_OVERRIDES = {
@@ -33,6 +35,7 @@ class ModelManager:
     _TRT_EXTRA_OPTS = {
         hand_landmarks: {'trt_cuda_graph_enable': True},
         pose_landmarks: {'trt_cuda_graph_enable': True},
+        palm_detector: {'trt_cuda_graph_enable': True},
         face_landmarks: {
             'trt_cuda_graph_enable': True,  # through GpuFaceBatch, always at batch 2
             'trt_profile_min_shapes': 'input_12:1x256x256x3',

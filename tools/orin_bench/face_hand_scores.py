@@ -24,10 +24,12 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from poser import _assign_heads, _drop_nested_bodies  # noqa: E402
+from poser import HAND_WRIST_FACTOR, _assign_heads, _drop_nested_bodies, _hand_on_own_wrist  # noqa: E402
 from src.body_processor import BodyProcessor  # noqa: E402
 from src.config import detect_platform  # noqa: E402
 from src.face_processor import FaceProcessor  # noqa: E402
+from src.gpu_model import gpu_model  # noqa: E402
+from src.palm_detector import assign_palms, decode_palms, palm_roi, upper_body_roi  # noqa: E402
 from src.hand_processor import HandProcessor, _POSE_HAND, _rect, hand_roi_from_pose  # noqa: E402
 from src.model_manager import ModelManager  # noqa: E402
 from src.person_detector import PersonDetector  # noqa: E402
@@ -123,6 +125,20 @@ HAND_CROPS = {
 }
 
 
+# Palm re-find chains (src/palm_detector.py), all with the app's own-wrist check on the found hand:
+# name -> (upper-body crop size in shoulder widths or None, palm only after the pose crop failed).
+# Without 'after' a lost side takes the palm's crop when a palm was assigned to it, else the pose crop.
+PALM_CHAINS = {
+    'own:app': (None, False),
+    'own:palm2.5': (2.5, False),
+    'own:palm3.0': (3.0, False),
+    'own:palm4.0': (4.0, False),
+    'own:app+palm2.5': (2.5, True),
+    'own:app+palm3.0': (3.0, True),
+    'own:app+palm4.0': (4.0, True),
+}
+
+
 def over_torso(pose, side: int) -> bool:
     """True when the wrist lies inside the shoulders-hips quadrilateral (11, 12, 24, 23)."""
     quad = np.array([(pose[i].x, pose[i].y) for i in (11, 12, 24, 23)])
@@ -146,8 +162,10 @@ def main() -> None:
     hand.CONF_THRESHOLD = 0.0  # every hand's presence is returned; the app's 0.5 cutoff is applied below
     tracker = PersonTracker()
     body_rois, hand_rois = {}, {}
-    chains = {name: {} for name in HAND_CROPS}  # crop choice -> track id -> (left, right) next-frame crops
-    runs_n = {name: 0 for name in HAND_CROPS}  # hand model runs per crop choice
+    chains = {name: {} for name in list(HAND_CROPS) + list(PALM_CHAINS)}  # crop choice -> track id -> (left, right) next-frame crops
+    runs_n = {name: 0 for name in list(HAND_CROPS) + list(PALM_CHAINS)}  # hand model runs per crop choice
+    palm_n = {name: 0 for name in PALM_CHAINS}  # palm detector runs per chain
+    palm_model = gpu_model(mm, 'palm_detector', 'input_1', ['Identity', 'Identity_1'], 192)
     rows = []
     frame_no = 0
     with open(args.out, 'w') as out:
@@ -210,10 +228,48 @@ def main() -> None:
                             got.append(ok)
                         chains[name][pid] = tuple(nxt)
                         row['chains'][name] = got
+                    pose = res.landmarks
+                    for name, (scale, after) in PALM_CHAINS.items():
+                        prev = chains[name].get(pid, (None, None))
+                        lost = [s for s in (0, 1) if prev[s] is None]
+                        found_palms = None
+
+                        def palms():
+                            nonlocal found_palms
+                            if found_palms is None:
+                                M = Preprocessor.roi_affine(*upper_body_roi(pose, scale), 192)
+                                boxes, logits = palm_model.run(frame, M)
+                                palm_n[name] += 1
+                                found_palms = assign_palms(decode_palms(boxes[0], logits[0], M), pose, lost)
+                            return found_palms
+                        nxt, got = [], []
+                        for side in (0, 1):
+                            roi = prev[side]
+                            if roi is None:
+                                if pose[15 + side].visibility >= hand.WRIST_VISIBILITY:
+                                    roi = hand_roi_from_pose(pose, side)
+                                if scale and not after and side in palms():
+                                    roi = palm_roi(palms()[side])
+                            ok_h = None
+                            if roi is not None and all(map(math.isfinite, roi)):
+                                h = hand._run(frame, roi)
+                                runs_n[name] += 1
+                                if h is not None and h.presence >= HAND_KEEP and _hand_on_own_wrist(h, pose, side, HAND_WRIST_FACTOR):
+                                    ok_h = h
+                            if ok_h is None and prev[side] is None and scale and after and side in palms():
+                                h = hand._run(frame, palm_roi(palms()[side]))
+                                runs_n[name] += 1
+                                if h is not None and h.presence >= HAND_KEEP and _hand_on_own_wrist(h, pose, side, HAND_WRIST_FACTOR):
+                                    ok_h = h
+                            nxt.append(ok_h.roi if ok_h is not None else None)
+                            got.append(ok_h is not None)
+                        chains[name][pid] = tuple(nxt)
+                        row['chains'][name] = got
                 out.write(json.dumps(row) + '\n')
                 rows.append(row)
     cap.release()
     print(summary(rows, frame_no))
+    print('palm detector runs per frame: ' + '  '.join(f'{k}={v / max(frame_no, 1):.2f}' for k, v in palm_n.items()))
     print('hand model runs per frame: ' + '  '.join(f'{k}={v / max(frame_no, 1):.2f}' for k, v in runs_n.items()))
 
 
@@ -245,7 +301,7 @@ def summary(rows, frames: int) -> str:
                          f'{100 * sum(v >= HAND_KEEP for v in p) / len(sel):.0f}%  no crop {no_crop}  '
                          f'presence bins <0.1/0.1-0.3/0.3-0.4/0.4-0.5/>=0.5: {"/".join(str(int(b)) for b in bins)}')
     lines.append('hands found per crop choice (both sides, as chains like the app): away / over torso')
-    for name in HAND_CROPS:
+    for name in list(HAND_CROPS) + list(PALM_CHAINS):
         cnt = {False: [0, 0], True: [0, 0]}
         for r in rows:
             for side in (0, 1):
