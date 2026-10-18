@@ -18,6 +18,7 @@ from src.face_processor import FaceProcessor, face_box_from_pose, face_min_logit
 from src.hand_processor import HandProcessor
 from src.body_processor import BodyProcessor
 from src.renderer import Renderer
+from src.gpu_model import FIRST_RUNS_LOCK
 from src.fps_counter import FPSCounter
 from src.tracker import PersonTracker, iou, overlap_of_smaller
 from src.smoothing import PoseSmoother
@@ -305,6 +306,42 @@ def _run_pipelined(produce, consume) -> None:
         thread.join(timeout=2)
 
 
+class _Ahead:
+    """--detect-ahead: run produce() in its own thread one item ahead (a one-slot queue). get() returns the next
+    item, or raises the error produce() raised (EOFError at the end of a clip)."""
+
+    def __init__(self, produce) -> None:
+        self._items: queue.Queue = queue.Queue(maxsize=1)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._work, args=(produce,), name='poser-detect', daemon=True)
+        self._thread.start()
+
+    def _put(self, item) -> None:
+        while not self._stop.is_set():
+            try:
+                self._items.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                pass
+
+    def _work(self, produce) -> None:
+        try:
+            while not self._stop.is_set():
+                self._put((True, produce()))
+        except BaseException as e:  # noqa: BLE001 - handed to get()
+            self._put((False, e))
+
+    def get(self):
+        ok, item = self._items.get()
+        if not ok:
+            raise item
+        return item
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2)
+
+
 def main():
     config = parse_args()
     models_dir = Path(__file__).parent / 'models'
@@ -404,12 +441,31 @@ def main():
     signal.signal(signal.SIGTERM, _raise_terminated)
     exit_code = 0
 
+    def detect(frame_gpu):
+        frame_w, frame_h = frame_gpu.size()
+        detections = person_proc.process(frame_gpu, frame_w, frame_h)
+        detections.body_boxes = _drop_nested_bodies(detections.body_boxes, detections.head_boxes)
+        return detections
+
+    def read_and_detect():
+        # With FIRST_RUNS_LOCK held: no GPU allocation here while another session records its CUDA graph.
+        with FIRST_RUNS_LOCK:
+            frame_gpu = capture.read_frame().clone()  # read_frame() reuses its buffer for the next frame
+            t = time.perf_counter()
+            detections = detect(frame_gpu)
+            return frame_gpu, detections, (time.perf_counter() - t) * 1000
+
+    ahead = None
+
     def infer():
         """Capture a frame and run the models, tracking and smoothing on it."""
         nonlocal frame_no, body_rois, hand_rois, hand_wrists, last_report
         frame_no += 1
         t = time.perf_counter()
-        frame_gpu = capture.read_frame()
+        if ahead:  # read, and the person detector run, one frame ahead in the poser-detect thread
+            frame_gpu, ahead_dets, ahead_ms = ahead.get()
+        else:
+            frame_gpu = capture.read_frame()
         # A replay runs faster or slower than the camera did; smoothing works in seconds, so it gets the clip's time.
         t_frame = frame_no / capture.clip_fps if capture.clip_fps > 0 else time.monotonic()
         frame_w, frame_h = frame_gpu.size()
@@ -425,10 +481,13 @@ def main():
         heads_now = {}  # track id -> face crop this frame, to move a ghost face with the head
 
         if person_proc:
-            t = time.perf_counter()
-            detections = person_proc.process(frame_gpu, frame_w, frame_h)
-            detections.body_boxes = _drop_nested_bodies(detections.body_boxes, detections.head_boxes)
-            stage_ms['person'] += (time.perf_counter() - t) * 1000
+            if ahead:
+                detections = ahead_dets
+                stage_ms['person'] += ahead_ms  # in the other thread, while the last frame's people ran here
+            else:
+                t = time.perf_counter()
+                detections = detect(frame_gpu)
+                stage_ms['person'] += (time.perf_counter() - t) * 1000
             counts['bodies'] += len(detections.body_boxes)
             counts['heads'] += len(detections.head_boxes)
             counts['hands'] += len(detections.hand_boxes)
@@ -635,7 +694,7 @@ def main():
 
         if black_frame is not None:
             frame_gpu = None            # not drawn
-        elif config.pipeline:
+        elif config.pipeline and not ahead:  # --detect-ahead already copied it
             frame_gpu = frame_gpu.clone()  # read_frame() reuses its buffer for the next frame
         return (frame_gpu, frame_w, frame_h, all_face_results, all_hand_results, all_body_results, id_labels,
                 detections, track_ids)
@@ -727,6 +786,8 @@ def main():
     rendered, t_start = 0, time.monotonic()
     label_t0 = None  # when the first picture was shown, for the --test-label seconds counter
     try:
+        if config.detect_ahead and person_proc:
+            ahead = _Ahead(read_and_detect)
         if config.pipeline:
             _run_pipelined(infer, render)
         else:
@@ -752,6 +813,8 @@ def main():
     finally:
         # Ignore a second SIGTERM while the camera (nvargus) is being released.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if ahead:
+            ahead.close()
         capture.release()
         cv2.destroyAllWindows()
         print('[EXIT] camera released', flush=True)

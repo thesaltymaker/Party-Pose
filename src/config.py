@@ -31,6 +31,7 @@ class Config:
     smooth: bool = True         # smooth landmarks across frames (--no-smooth for A/B tests)
     follow: bool = True         # keep a found person by their pose model, not the detector (--no-follow for A/B tests)
     pipeline: bool = False      # run the next frame's models while this frame is drawn (one frame later on screen)
+    detect_ahead: bool = False  # read the next frame and run the person detector on it in another thread
     video: Optional[str] = None  # read this raw clip (src/raw_video.py) instead of the camera, as fast as possible
     skelly: bool = False        # filled bone-coloured face with eyes, nose and mouth cut out
     santa_hat: bool = False     # Santa hat on each face
@@ -101,6 +102,9 @@ def parse_args() -> Config:
     parser.add_argument("--video", default=None, metavar="CLIP",
                         help="Read a clip recorded with tools/orin_bench/record_video.py instead of the camera, "
                              "as fast as possible, and exit at its end (repeatable benchmarks)")
+    parser.add_argument("--detect-ahead", action="store_true",
+                        help="Read the next frame and run the person detector on it in its own thread, while this "
+                             "frame's pose, face and hand models run")
     parser.add_argument("--pipeline", action="store_true",
                         help="Run the next frame's models in a worker thread while this frame is drawn "
                              "(faster; picture one frame later)")
@@ -188,6 +192,7 @@ def parse_args() -> Config:
         smooth=args.smooth,
         follow=args.follow,
         pipeline=args.pipeline,
+        detect_ahead=args.detect_ahead,
         video=args.video,
         skelly=args.skelly,
         santa_hat=args.santa_hat,

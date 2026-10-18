@@ -17,6 +17,7 @@ from one thread.
 """
 from __future__ import annotations
 
+import threading
 from typing import List
 
 import cv2
@@ -24,6 +25,24 @@ import numpy as np
 import onnxruntime as ort
 
 from src.preprocessor import Preprocessor
+
+# --detect-ahead: ONNX Runtime records a session's CUDA graph in its first runs, in CUDA's global capture mode, where
+# a GPU allocation in another thread (OpenCV allocates in most cv2.cuda calls) breaks the recording. A session holds
+# this lock for its first runs; the thread that reads frames and runs the person detector holds it for each frame.
+FIRST_RUNS_LOCK = threading.Lock()
+FIRST_RUNS = 3
+_runs = {}  # id(session) -> bound runs so far, up to FIRST_RUNS
+
+
+def run_bound(session, binding) -> None:
+    """session.run_with_iobinding(binding), holding FIRST_RUNS_LOCK during the session's first FIRST_RUNS runs."""
+    n = _runs.get(id(session), 0)
+    if n >= FIRST_RUNS:
+        session.run_with_iobinding(binding)
+        return
+    with FIRST_RUNS_LOCK:
+        session.run_with_iobinding(binding)
+    _runs[id(session)] = n + 1
 
 
 def gpu_face_batch(model_manager) -> 'GpuFaceBatch':
@@ -95,7 +114,7 @@ class GpuModel:
         # wait for it, and an upload from ordinary CPU memory can return before the copy lands. Without this wait
         # about 1 run in 25 read a stale input (test_gpu_model.py).
         self._opencv_stream.waitForCompletion()
-        self.session.run_with_iobinding(self._binding)
+        run_bound(self.session, self._binding)
         return [v.numpy() for v in self._out]
 
 
@@ -174,7 +193,7 @@ class GpuBatch:
                 if self._rgb[k].convertTo(cv2.CV_32FC3, slot, 1 / 255.0, 0.0).cudaPtr() != slot.cudaPtr():
                     raise RuntimeError('crop was not written into the bound GPU batch buffer')
             self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
-            session.run_with_iobinding(binding)
+            run_bound(session, binding)
             return [v.numpy() for v in out]
         if not self.on_gpu:
             batch = np.concatenate([Preprocessor.crop_rotated_nhwc(frame_gpu, M, size).copy() for M in Ms])
@@ -188,7 +207,7 @@ class GpuBatch:
             if self._rgb[k].convertTo(cv2.CV_32FC3, slot, 1 / 255.0, 0.0).cudaPtr() != slot.cudaPtr():
                 raise RuntimeError('crop was not written into the bound GPU batch buffer')
         self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
-        session.run_with_iobinding(binding)
+        run_bound(session, binding)
         return [v.numpy() for v in out]
 
 
@@ -239,7 +258,7 @@ class GpuFaceBatch:
             if self._rgb[k].convertTo(cv2.CV_32FC3, slot, 1 / 255.0, 0.0).cudaPtr() != slot.cudaPtr():
                 raise RuntimeError('face crop was not written into the bound GPU batch buffer')
         self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
-        self.session.run_with_iobinding(self._binding)
+        run_bound(self.session, self._binding)
         n = len(rects)
         return self._out[0].numpy().reshape(self.SLOTS, 478, 3)[:n], self._out[1].numpy().reshape(-1)[:n]
 
@@ -281,5 +300,5 @@ class GpuDetectorInput:
         if self._padded.convertTo(cv2.CV_32FC3, self._input, 1.0, 0.0).cudaPtr() != self._input.cudaPtr():
             raise RuntimeError('detector input was not written into the bound GPU buffer')
         self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
-        self.session.run_with_iobinding(self._binding)
+        self.session.run_with_iobinding(self._binding)  # no CUDA graph: no FIRST_RUNS_LOCK
         return self._binding.copy_outputs_to_cpu()[0]
