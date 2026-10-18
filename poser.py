@@ -24,7 +24,7 @@ from src.tracker import PersonTracker, iou, overlap_of_smaller
 from src.smoothing import PoseSmoother
 from src.track_stats import TrackStats
 from src.flicker import FlickerCounter
-from src.ghosts import Ghosts
+from src.ghosts import Ghosts, skip_turn
 from src.motion import MotionStats
 from src.hold import JointHold
 from src.types import BoundingBox, FaceResult, HandResult, BodyResult, Landmark
@@ -372,7 +372,8 @@ class _Ahead:
 def main():
     config = parse_args()
     models_dir = Path(__file__).parent / 'models'
-    model_manager = ModelManager(models_dir, platform=config.platform, detector=config.detector)
+    model_manager = ModelManager(models_dir, platform=config.platform, detector=config.detector,
+                                 pose_model=config.pose_model, hand_model=config.hand_model)
 
     any_modality = config.face or config.hands or config.body
     required_models = []
@@ -506,6 +507,7 @@ def main():
         track_ids: List[int] = []
         id_labels = []  # (track id, body box) for --show-ids
         seen = {}  # (track id, part) -> this frame's result (a face with its head box), for ghosts
+        skipped = set()  # (track id, part) not run on purpose this frame (--hand-every, --face-every)
         heads_now = {}  # track id -> face crop this frame, to move a ghost face with the head
 
         if person_proc:
@@ -602,6 +604,11 @@ def main():
             faces_by_person = {}  # index in people -> (FaceResult or None, face logit)
             if face_proc:
                 with_box = [k for k, box in enumerate(face_boxes) if box is not None]
+                for k in with_box:  # --face-every: some people keep the last face this frame (ghost at full brightness)
+                    key = (people[k][0].id, 'face')
+                    if skip_turn(config.face_every, frame_no, k, ghosts.fresh(key)):
+                        skipped.add(key)
+                with_box = [k for k in with_box if (people[k][0].id, 'face') not in skipped]
                 if with_box:
                     t = time.perf_counter()
                     mins = ([face_min_logit(bodies[k] and bodies[k].landmarks, people[k][0].id in face_held,
@@ -664,7 +671,10 @@ def main():
 
                 # Hands are cropped from the pose's wrists (or the hand's last landmarks), so they need the body.
                 if hand_proc and body is not None:
-                    if config.hand_batch:
+                    fresh = [key for key in ((person_id, 'hand0'), (person_id, 'hand1')) if ghosts.fresh(key)]
+                    if skip_turn(config.hand_every, frame_no, k, bool(fresh)):  # --hand-every: keep the last hands
+                        skipped.update(fresh)
+                    elif config.hand_batch:
                         hand_people.append((person_id, body))  # all people's hands in one run, after this loop
                     else:
                         t = time.perf_counter()
@@ -690,7 +700,7 @@ def main():
                     print(line, flush=True)
 
         face_held.clear()
-        face_held.update(pid for pid, part in seen if part == 'face')
+        face_held.update(pid for pid, part in list(seen) + list(skipped) if part == 'face')
 
         if smoother:
             t = time.perf_counter()
@@ -701,7 +711,7 @@ def main():
         # Ghosts (issue #13): a tracked person's part missing this frame is drawn again from its last smoothed
         # result, dimming, in the track's colour. Copies with their own brightness, so the result being drawn
         # by the other thread (--pipeline) is never changed.
-        ghosted = ghosts.update(seen)
+        ghosted = ghosts.update(seen, skipped)
         drawn = {key: item[0] if key[1] == 'face' else item for key, item in seen.items()}
         for (person_id, part), item, fade in ghosted:
             if part == 'face':
@@ -714,7 +724,7 @@ def main():
             else:
                 hand = dataclasses.replace(item, fade=fade)
                 pose = next((b for b in all_body_results if b.person_id == person_id and b.fade >= 1.0), None)
-                if config.ghost_follow_wrist and pose is not None and (person_id, part) in hand_wrists:
+                if (config.ghost_follow_wrist or fade >= 1.0) and pose is not None and (person_id, part) in hand_wrists:
                     w = pose.landmarks[15 + int(part[-1])]
                     old = hand_wrists[(person_id, part)]
                     hand = _moved_hand(hand, (old.x, old.y), (w.x, w.y))
