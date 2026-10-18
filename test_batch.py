@@ -32,12 +32,13 @@ class _Session:
 
 class _Models:
     def __init__(self, kind):
-        self.single, self.batch = _Session(kind), _Session(kind)
+        self.single, self.batch, self.sizes = _Session(kind), _Session(kind), []
 
     def get_session(self, _name):
         return self.single
 
-    def get_batch_session(self, _name, _slots):
+    def get_batch_session(self, _name, n):
+        self.sizes.append(n)
         return self.batch
 
 
@@ -60,14 +61,14 @@ def _same(a, b):
     return np.allclose(a.pts, b.pts) and a.presence == b.presence and a.roi == pytest.approx(b.roi)
 
 
-@pytest.mark.parametrize('n,slots,batches', [(3, 4, [4]), (4, 4, [4]), (5, 4, [4, 4]), (1, 2, [2])])
+@pytest.mark.parametrize('n,slots,batches', [(3, 4, [3]), (4, 4, [4]), (5, 4, [4, 1]), (1, 2, [1])])
 def test_poses_in_one_run_match_one_run_each(n, slots, batches):
     single = BodyProcessor(_Models('pose'))
     batched = BodyProcessor(_Models('pose'), batch=slots)
     one_each = [single.process(None, BoundingBox(r[0] - r[2] / 2, r[1] - r[2] / 2, r[2], r[2], 1.0), 1920, 1080, False,
                                roi=r) for r in _rois(n)]
     together = batched.process_many(None, _rois(n))
-    assert batched.model_manager.batch.batches == batches  # always the full batch (one CUDA graph)
+    assert batched.model_manager.batch.batches == batches  # no empty slots
     assert single.model_manager.single.batches == [1] * n
     assert len(together) == n
     assert all(_same(a, b) for a, b in zip(one_each, together))
@@ -97,7 +98,7 @@ def test_hands_of_all_people_in_one_run_match_one_run_each():
     batched = HandProcessor(_Models('hand'), batch=4)
     one_each = [single.process(None, pose, rois) for pose, rois in people]
     together = batched.process_many(None, people)
-    assert batched.model_manager.batch.batches == [4, 4]  # 6 hands: two full runs
+    assert batched.model_manager.batch.batches == [4, 2]  # 6 hands: 4, then a session for 2
     assert len(together) == 3
     for a, b in zip(one_each, together):
         assert len(b) == 2
@@ -111,4 +112,4 @@ def test_hand_without_visible_wrist_is_not_run():
     batched = HandProcessor(_Models('hand'), batch=2)
     hands = batched.process_many(None, [(pose, (None, None))])
     assert hands[0][0] is None
-    assert batched.model_manager.batch.batches == [2]
+    assert batched.model_manager.batch.batches == [1]

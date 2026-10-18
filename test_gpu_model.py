@@ -145,9 +145,9 @@ def test_detector_bgr_input_on_the_gpu_matches_the_numpy_path(mm, frame):
 ])
 def test_batched_crops_give_the_same_outputs(mm, frame, model, size, outs):
     """--pose-batch / --hand-batch: GpuBatch on the .dynbatch.onnx copy. On the CPU the copy gives the original
-    model's outputs for each crop (to 1e-3); on the GPU a crop's outputs must not depend on the other slots (same
-    engine, to 1e-3). One run per crop vs the batch on the GPU is not compared here: TF32 on the laptop (and FP16
-    on the Orin) pick other kernels per batch size, up to 7 model pixels apart on this noise frame; with TF32 off
+    model's outputs for each crop (to 1e-3); on the GPU a crop's outputs must not depend on its slot (same batch
+    size, so the same engine: to 1e-3). Other batch sizes are not compared here: TF32 on the laptop (and FP16 on
+    the Orin) pick other kernels per batch size, up to 7 model pixels apart on this noise frame; with TF32 off
     they match exactly. tools/orin_bench/check_batch.py compares them on real clip frames."""
     batch_file = MODELS / mm._MODEL_FILES[model].replace('.onnx', '.dynbatch.onnx')
     if not batch_file.exists():
@@ -162,7 +162,9 @@ def test_batched_crops_give_the_same_outputs(mm, frame, model, size, outs):
             assert np.allclose(b[k], o[0], atol=1e-3), (model, k, float(np.abs(b[k] - o[0]).max()))
 
     gb = gpu_batch(mm, model, 'input_1', outs, size, 4)
-    together = gb.run(frame, Ms)  # 5 crops: a full run and a run with 1 crop + 3 old slots
-    for k, M in enumerate(Ms):
-        for t, a in zip(together, gb.run(frame, [M])):
-            assert np.allclose(t[k], a[0], atol=1e-3), (model, k, float(np.abs(t[k] - a[0]).max()))
+    together = gb.run(frame, Ms[:4])
+    order = [2, 0, 3, 1]
+    swapped = gb.run(frame, [Ms[k] for k in order])  # the same batch-4 engine, crops in other slots
+    for t, w in zip(together, swapped):
+        assert np.allclose(t[order], w, atol=1e-3), (model, float(np.abs(t[order] - w).max()))
+    assert [o.shape[0] for o in gb.run(frame, Ms)] == [5] * len(outs)  # 4 + 1

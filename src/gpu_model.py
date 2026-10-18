@@ -109,30 +109,43 @@ def gpu_batch(model_manager, model: str, input_name: str, outputs: List[str], si
 
 class GpuBatch:
     """GpuModel for up to `slots` rotated crops in one run (--pose-batch, --hand-batch), on the model's
-    .dynbatch.onnx copy (tools/orin_bench/batch_model.py). Like GpuFaceBatch it always runs the full batch, so
-    the Orin's TensorRT session replays one CUDA graph; unused slots keep their last crop and are ignored.
-    More crops than slots run `slots` at a time."""
+    .dynbatch.onnx copy (tools/orin_bench/batch_model.py). n crops run in a session built for exactly n (one per
+    batch size, each with its own engine and buffers), so the Orin's TensorRT sessions each replay one CUDA graph
+    and no model time goes to empty slots: a fixed batch of 4 poses and 8 hands with 2 people dropped
+    three_dancers from 29.8 to 26.9 FPS. More crops than slots run `slots` at a time."""
 
     def __init__(self, model_manager, model: str, input_name: str, outputs: List[str], size: int, slots: int) -> None:
-        self.session = model_manager.get_batch_session(model, slots)
+        self.model_manager, self.model = model_manager, model
         self.input_name, self.outputs, self.size, self.slots = input_name, outputs, size, slots
+        self.session = model_manager.get_batch_session(model, 1)
         self.on_gpu = any(p in self.session.get_providers()
                           for p in ('TensorrtExecutionProvider', 'CUDAExecutionProvider'))
+        self._runs = {}  # batch size -> (session, I/O binding, bound input buffer, bound outputs)
         if not self.on_gpu:
             return
         self._stream = cv2.cuda.Stream.Null()
         self._warp = [cv2.cuda_GpuMat(size, size, cv2.CV_8UC3) for _ in range(slots)]
         self._rgb = [cv2.cuda_GpuMat(size, size, cv2.CV_8UC3) for _ in range(slots)]
-        self._input = cv2.cuda.createContinuous(slots * size, size, cv2.CV_32FC3, cv2.cuda_GpuMat())
-        self._binding = self.session.io_binding()
-        self._binding.bind_input(input_name, 'cuda', 0, np.float32, [slots, size, size, 3], self._input.cudaPtr())
-        meta = {o.name: o.shape for o in self.session.get_outputs()}
-        self._out = []
-        for name in outputs:
-            v = ort.OrtValue.ortvalue_from_shape_and_type([slots] + [d if isinstance(d, int) else 1 for d in meta[name][1:]],
-                                                          np.float32, 'cuda', 0)
-            self._binding.bind_ortvalue_output(name, v)
-            self._out.append(v)
+
+    def _session(self, n: int) -> tuple:
+        if n not in self._runs:
+            size = self.size
+            session = self.model_manager.get_batch_session(self.model, n)
+            if not self.on_gpu:
+                self._runs[n] = (session, None, None, None)
+                return self._runs[n]
+            buf = cv2.cuda.createContinuous(n * size, size, cv2.CV_32FC3, cv2.cuda_GpuMat())
+            binding = session.io_binding()
+            binding.bind_input(self.input_name, 'cuda', 0, np.float32, [n, size, size, 3], buf.cudaPtr())
+            meta = {o.name: o.shape for o in session.get_outputs()}
+            out = []
+            for name in self.outputs:
+                v = ort.OrtValue.ortvalue_from_shape_and_type([n] + [d if isinstance(d, int) else 1 for d in meta[name][1:]],
+                                                              np.float32, 'cuda', 0)
+                binding.bind_ortvalue_output(name, v)
+                out.append(v)
+            self._runs[n] = (session, binding, buf, out)
+        return self._runs[n]
 
     def run(self, frame_gpu: cv2.cuda_GpuMat, Ms: List[np.ndarray]) -> List[np.ndarray]:
         """The model's outputs [len(Ms), ...] for the rotated crops given by Preprocessor.roi_affine."""
@@ -143,22 +156,21 @@ class GpuBatch:
 
     def _run(self, frame_gpu, Ms) -> List[np.ndarray]:
         n, size = len(Ms), self.size
+        session, binding, buf, out = self._session(n)
         if not self.on_gpu:
-            batch = np.zeros((self.slots, size, size, 3), np.float32)
-            for k, M in enumerate(Ms):
-                batch[k] = Preprocessor.crop_rotated_nhwc(frame_gpu, M, size)[0]
-            return [o[:n] for o in self.session.run(self.outputs, {self.input_name: batch})]
+            batch = np.concatenate([Preprocessor.crop_rotated_nhwc(frame_gpu, M, size).copy() for M in Ms])
+            return session.run(self.outputs, {self.input_name: batch})
         for k, M in enumerate(Ms):
             # Use the returned GpuMats: on the Orin's OpenCV build dst is not always written in place.
             self._warp[k] = cv2.cuda.warpAffine(frame_gpu, cv2.invertAffineTransform(M), (size, size), self._warp[k],
                                                 flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
             self._rgb[k] = cv2.cuda.cvtColor(self._warp[k], cv2.COLOR_BGR2RGB, self._rgb[k])
-            slot = self._input.rowRange(k * size, (k + 1) * size)
+            slot = buf.rowRange(k * size, (k + 1) * size)
             if self._rgb[k].convertTo(cv2.CV_32FC3, slot, 1 / 255.0, 0.0).cudaPtr() != slot.cudaPtr():
                 raise RuntimeError('crop was not written into the bound GPU batch buffer')
         self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
-        self.session.run_with_iobinding(self._binding)
-        return [v.numpy()[:n] for v in self._out]
+        session.run_with_iobinding(binding)
+        return [v.numpy() for v in out]
 
 
 class GpuFaceBatch:

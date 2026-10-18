@@ -108,15 +108,16 @@ class ModelManager:
         self._sessions[name] = session
         return session
 
-    def get_batch_session(self, name: str, slots: int) -> ort.InferenceSession:
-        """A session on the model's .dynbatch.onnx copy (tools/orin_bench/batch_model.py) for a fixed batch of
-        `slots` (GpuBatch): TensorRT builds for that one batch size and replays it as one CUDA graph."""
-        key = f'{name}_batch'
+    def get_batch_session(self, name: str, n: int) -> ort.InferenceSession:
+        """A session on the model's .dynbatch.onnx copy (tools/orin_bench/batch_model.py) for a batch of exactly
+        n (GpuBatch): TensorRT builds for that one batch size and replays it as one CUDA graph. Each batch size has
+        its own session and engine cache file."""
+        key = f'{name}_b{n}'
         if key not in self._sessions:
             stem = self._MODEL_FILES[name][:-len('.onnx')]
-            shape = f'input_1:{slots}x' + {'pose_landmarks': '256x256x3', 'hand_landmarks': '224x224x3'}[name]
+            shape = f'input_1:{n}x' + {'pose_landmarks': '256x256x3', 'hand_landmarks': '224x224x3'}[name]
             self._MODEL_FILES = {**self._MODEL_FILES, key: stem + '.dynbatch.onnx'}
             self._TRT_EXTRA_OPTS = {**self._TRT_EXTRA_OPTS, key: {
-                'trt_cuda_graph_enable': True, 'trt_profile_min_shapes': shape,
+                'trt_cuda_graph_enable': True, 'trt_engine_cache_prefix': key, 'trt_profile_min_shapes': shape,
                 'trt_profile_opt_shapes': shape, 'trt_profile_max_shapes': shape}}
         return self.get_session(key)
