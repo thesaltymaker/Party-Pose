@@ -102,10 +102,9 @@ class Renderer:
                     continue
                 if lm.presence < 0.5 and lm.fade >= 1.0:
                     continue
+                pt_color = dim_color if lm.visibility < 0.5 else color
                 if lm.fade < 1.0:  # a lost joint held at its last place (--hold-joints)
-                    pt_color = _faded(color, lm.fade)
-                else:
-                    pt_color = dim_color if lm.visibility < 0.5 else color
+                    pt_color = _faded(pt_color, lm.fade)
                 cv2.circle(cpu_frame, (x, y), 4, pt_color, -1)
             for conn in BODY_CONNECTIONS:
                 if conn[0] in _BODY_SKIP_LM or conn[1] in _BODY_SKIP_LM:

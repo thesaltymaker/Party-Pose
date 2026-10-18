@@ -39,7 +39,7 @@ def _state(kind: str, result, pts: np.ndarray, w: int, h: int) -> np.ndarray:
         for i in range(len(state)):
             if i in _BODY_SKIP_LM or (lms[i].presence < 0.5 and lms[i].fade >= 1.0):
                 state[i] = 0
-            elif state[i] and lms[i].visibility < 0.5 and lms[i].fade >= 1.0:
+            elif state[i] and lms[i].visibility < 0.5:
                 state[i] = 1
     return state
 

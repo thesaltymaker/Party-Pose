@@ -48,6 +48,17 @@ def test_joint_found_again_is_drawn_fresh():
     assert b.landmarks[13].fade == 1.0 and b.landmarks[13].x == 155.0
 
 
+def test_a_dim_joint_stays_dim_while_held():
+    h = JointHold(frames=4)
+    b = _body()
+    b.landmarks[13].visibility = 0.2
+    h.apply([b])
+    b = _body(low=[13])
+    b.landmarks[13].visibility = 0.9  # the lost joint's own score means nothing
+    h.apply([b])
+    assert b.landmarks[13].visibility == 0.2
+
+
 def test_zero_frames_holds_nothing():
     h = JointHold(frames=0)
     h.apply([_body()])

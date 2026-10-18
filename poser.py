@@ -401,7 +401,8 @@ def main():
         frame_no += 1
         t = time.perf_counter()
         frame_gpu = capture.read_frame()
-        t_frame = time.monotonic()
+        # A replay runs faster or slower than the camera did; smoothing works in seconds, so it gets the clip's time.
+        t_frame = frame_no / capture.clip_fps if capture.clip_fps > 0 else time.monotonic()
         frame_w, frame_h = frame_gpu.size()
         stage_ms['capture'] += (time.perf_counter() - t) * 1000
 

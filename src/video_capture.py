@@ -68,6 +68,7 @@ class VideoCaptureModule:
 
     def __init__(self, config: 'Config') -> None:
         self._clip = None
+        self.clip_fps = 0.0
         video = getattr(config, 'video', None)
         # Platform-specific pipeline creation
         if video:
@@ -91,6 +92,7 @@ class VideoCaptureModule:
 
         if self._clip is not None:
             self.width, self.height = self._clip.width, self._clip.height
+            self.clip_fps = self._clip.fps  # replays smooth on the clip's own clock, not the replay speed
         else:
             if not self._cap.isOpened():
                 raise RuntimeError(f"Failed to open camera with index {config.camera}")
