@@ -1,4 +1,4 @@
-"""Per-call cost of the per-person pipeline pieces on the Orin, to decide on batching and GPU-resident crops.
+"""Per-call time of the per-person pipeline pieces on the Orin, to decide on batching and GPU-resident crops.
 
 Uses the app's ModelManager (same providers and TensorRT options) on a synthetic 1920x1080 frame; no camera,
 no images of people. Run with the service stopped, so nothing else uses the GPU:

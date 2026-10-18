@@ -32,7 +32,7 @@ After a rebuild, the first run rebuilds the TensorRT engines in `models/trt_cach
 sh ~/Projects/Party-Pose/tools/orin_setup/snapshot.sh
 ```
 
-Writes a dated snapshot to `~/.local/share/.quokka-larder/<date>/` on the Orin: the repo including `env/`, models and TensorRT engines; the OpenCV install and its build recipe; the recovered wheel; the camera ISP file (`camera_overrides.isp`); and a pip freeze. Unchanged files are hard links to the previous snapshot, so a new snapshot costs a few MB (the first one is about 2.4 GB). The snapshot's directories are made read-only, so `rm -rf` fails on them. To delete an old one: `chmod -R u+w <dir> && rm -rf <dir>`.
+Writes a dated snapshot to `~/.local/share/.quokka-larder/<date>/` on the Orin: the repo including `env/`, models and TensorRT engines; the OpenCV install and its build recipe; the recovered wheel; the camera ISP file (`camera_overrides.isp`); and a pip freeze. Unchanged files are hard links to the previous snapshot, so a new snapshot takes a few MB (the first one is about 2.4 GB). The snapshot's directories are made read-only, so `rm -rf` fails on them. To delete an old one: `chmod -R u+w <dir> && rm -rf <dir>`.
 
 Restore example:
 

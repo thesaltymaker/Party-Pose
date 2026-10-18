@@ -4,7 +4,7 @@
 #
 # Usage (on the Orin): sh tools/orin_setup/snapshot.sh
 #
-# Snapshots are hard-linked to the previous one (rsync --link-dest), so unchanged files cost no
+# Snapshots are hard-linked to the previous one (rsync --link-dest), so unchanged files take no
 # space. Each snapshot's directories are made read-only, so a stray `rm -rf` fails instead of
 # deleting it (delete an old one with `chmod -R u+w <dir> && rm -rf <dir>`).
 # Restore: copy the needed paths back, e.g.

@@ -18,7 +18,7 @@ only ever run under `CUDAExecutionProvider` on the Orin.
 1. Port night-mode grayscale switching into `src/video_capture.py`, running early enough in
    the pipeline that both detection and display see the same desaturated frame during night
    mode — matching the user's explicit call that detection needs the same image, and that the
-   gain/exposure poll must not cost FPS.
+   gain/exposure poll must not lower FPS.
 2. Enable TensorRT engine caching in `src/model_manager.py` so the "build once, reuse after"
    assumption is real, not just how ONNX Runtime happens to behave.
 3. Produce a factual per-model TensorRT compatibility report (pass/fail, shape match, cold vs

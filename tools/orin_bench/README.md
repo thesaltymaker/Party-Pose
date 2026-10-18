@@ -19,7 +19,7 @@ It writes `<name>.log`, `<name>.freq` (GPU/CPU clock samples) and `<name>.tegra`
 B=tools/orin_bench/bench_models.py
 python $B grab                                      # save a real camera frame (camera must be free)
 python $B pre                                       # GPU preprocessing per model
-python $B landmarks                                 # to_image_space cost per face/body/hand
+python $B landmarks                                 # to_image_space time per face/body/hand
 python $B models person_detector face_landmarks     # sessions exactly as poser.py creates them
 python $B models person_detector --provider cuda    # compare with the CUDA EP
 python $B models person_detector --provider trt --no-extra-opts --cache-tag full   # full-model TRT (fails after ~6 min)

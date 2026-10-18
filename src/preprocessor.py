@@ -41,7 +41,7 @@ class Preprocessor:
         new_w = int(round(frame_w * scale))
         new_h = int(round(frame_h * scale))
 
-        # Resize first: converting the whole 1080p frame cost 1.3 ms on the Orin, the small image almost nothing.
+        # Resize first: converting the whole 1080p frame took 1.3 ms on the Orin, the small image almost nothing.
         resized_gpu = cv2.cuda.resize(frame_gpu, (new_w, new_h), interpolation=interpolation)
         resized = cv2.cuda.cvtColor(resized_gpu, cv2.COLOR_BGR2RGB).download()
 
@@ -185,7 +185,7 @@ class Preprocessor:
         frame_h: int,
         mirror: bool = False,  # unused: frame is already flipped by video_capture
     ) -> List[Landmark]:
-        # Vectorized: per-element numpy scalar indexing cost ~4 ms per 478-point face on the Orin
+        # Vectorized: per-element numpy scalar indexing took ~4 ms per 478-point face on the Orin
         n, cols = lms_model.shape[0], lms_model.shape[1]
         xs = (crop_bbox.x + lms_model[:, 0] / model_w * crop_bbox.w).tolist()
         ys = (crop_bbox.y + lms_model[:, 1] / model_h * crop_bbox.h).tolist()

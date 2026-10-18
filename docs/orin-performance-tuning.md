@@ -11,7 +11,7 @@ techniques, with what each one gave.
 |---|---|---|
 | Pin the clocks | `sudo jetson_clocks` (resets on reboot); check `/sys/class/devfreq/17000000.gpu/cur_freq` = 1020000000 | Without it the GPU idles at 408-510 MHz under bursty load and every model takes ~2x |
 | Replay a recorded clip, not live people | `tools/orin_bench/record_video.py` (raw frames, ~11 GB/min), `poser.py --video CLIP`, `tools/orin_bench/clip_bench.sh` | Live FPS depends on who is dancing; a clip repeats within 0.2 FPS |
-| Check the benchmark's own cost | The `capture` stage of a replay should be ~2 ms, like the camera | A synchronous 6 MB read per frame added 10 ms and hid every gain |
+| Check the benchmark's own time | The `capture` stage of a replay should be ~2 ms, like the camera | A synchronous 6 MB read per frame added 10 ms and hid every gain |
 | Nothing else on the GPU | `systemctl is-active party-pose`, `pgrep -af poser.py` before each run | A restarted service running alongside made every run ~30% slower |
 | Interleave A/B runs | A, B, A, B back to back, not all A then all B | Drift between steps minutes apart flipped a +0.7 FPS change to -0.6 |
 | Same arguments as production | Include `--mirror`, `--pipeline`, `--black-bg --skelly` | What is measured must be what is shown |
@@ -49,7 +49,7 @@ techniques, with what each one gave.
 
 What did not pay: moving the crop to the CPU (2.2 ms vs 0.8 on the GPU); a second CUDA graph per batch size (wrong outputs, see below).
 
-## 4. Pitfalls that cost time
+## 4. Pitfalls that took time to find
 
 - **CUDA streams: OpenCV and ONNX Runtime do not wait for each other.** OpenCV's `cv2.cuda` calls run on the default stream; ONNX Runtime runs on its own non-blocking stream, and an upload from ordinary (pageable) CPU memory can return before it lands. Wait (`cv2.cuda.Stream.Null().waitForCompletion()`) before each bound run: without it 8 of 60 test runs read a stale input.
 - **A CUDA graph replays the addresses of its first run.** One set of input/output buffers per graph-enabled session (`gpu_model()` keeps one per model). Every run of that session must go through the binding.
@@ -57,7 +57,7 @@ What did not pay: moving the crop to the CPU (2.2 ms vs 0.8 on the GPU); a secon
 - **Give dynamic-batch TensorRT models a fixed shape range** (`trt_profile_min/opt/max_shapes`). Otherwise the first new batch size rebuilds the engine (~6 min on the Orin, app frozen).
 - **The Orin's OpenCV build may not write into a `dst` argument.** Always use the returned `GpuMat`; check the returned `cudaPtr()` when the buffer must stay the same (a bound input).
 - **`GpuMat` rows are padded.** A model input must be one block: `cv2.cuda.createContinuous`. `convertTo(type, dst, alpha, beta)` is the argument order that writes into `dst` in OpenCV 4.10.
-- **Shared CPU/GPU memory.** Copies are memory-to-memory (no PCIe); their cost is mostly the synchronize each one forces. Large file reads fill the same memory as page cache: drop it (`posix_fadvise(DONTNEED)`) or a later GPU allocation fails (NvMap error 12).
+- **Shared CPU/GPU memory.** Copies are memory-to-memory (no PCIe); their time is mostly the synchronize each one forces. Large file reads fill the same memory as page cache: drop it (`posix_fadvise(DONTNEED)`) or a later GPU allocation fails (NvMap error 12).
 - **Provider options read back from a session come back as strings ORT rejects**; build them again (as `ModelManager` does) when creating another session.
 - **`jtop` shows the system OpenCV (4.8.0, no CUDA)**; the app's venv loads the CUDA build through `00-opencv-cuda.pth`. Check with the venv's python.
 - **Commands over ssh**: `pkill -f poser.py` and `grep poser.py` match their own `bash -c`; use `pgrep -f "^/home/thesa/Projects/Party-Pose/env/bin/python poser.py"`. Long runs: `nohup ... & disown` and a done marker written even on failure.

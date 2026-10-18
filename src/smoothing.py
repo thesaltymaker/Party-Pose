@@ -73,7 +73,7 @@ class Smoother:
 
 
 def _points(result) -> np.ndarray:
-    """[N, 2] x, y: the processor's array if it set one (building it from Landmark objects is most of the cost on
+    """[N, 2] x, y: the processor's array if it set one (building it from Landmark objects is most of the time on
     the Orin), else from the landmarks (held faces)."""
     if result.pts is not None and len(result.pts) == len(result.landmarks):
         return result.pts

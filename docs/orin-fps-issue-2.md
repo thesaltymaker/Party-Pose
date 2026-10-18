@@ -45,7 +45,7 @@ The first baseline, at default clocks with the original code, was 14–16 FPS.
 
 Final verification with `tools/orin_bench/run_poser.sh` (merged code, `jetson_clocks`, ~1.2 bodies/frame): **28.5–31.6 FPS** (22 samples, 21 at 29.4 or higher). Per frame: person 8.4–10.1, face 6.1–6.7, body 4.3–5.0, render 7.9–8.8 ms. The GPU stayed at 1020 MHz for all 72 clock samples.
 
-## Remaining cost
+## Where the time still goes
 
 - With one person the floor is about 30 ms/frame: person ~10 + face ~5 + body ~4 + render ~9 + capture ~2.
 - Each extra detected body adds about 9 ms/frame (face + body landmark runs). The scene averaged about 2 bodies per frame. Separating real people from false positives is tracked in #3.

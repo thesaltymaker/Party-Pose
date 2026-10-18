@@ -16,7 +16,7 @@ def _old_full_frame(frame_gpu, w, h):
 
 
 def test_full_frame_is_unchanged_when_resized_before_colour_conversion():
-    # Person detector input: converting the 1080p frame cost 1.3 ms of 2.4 on the Orin; the channel swap gives the
+    # Person detector input: converting the 1080p frame took 1.3 ms of 2.4 on the Orin; the channel swap gives the
     # same pixels when done on the small image.
     g = cv2.cuda_GpuMat()
     g.upload(np.random.default_rng(0).integers(0, 255, (1080, 1920, 3), dtype=np.uint8))

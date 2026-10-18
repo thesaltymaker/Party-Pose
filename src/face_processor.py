@@ -60,7 +60,7 @@ class FaceProcessor:
     # ball, fists, lampshade and backs of heads score below it.
     PRESENCE_THRESHOLD = 0.5
 
-    # Faces per model run. On the Orin two faces in one run cost 2.89 ms against 2 x 2.36 ms; the TensorRT engine
+    # Faces per model run. On the Orin two faces in one run take 2.89 ms against 2 x 2.36 ms; the TensorRT engine
     # is built for batches of 1-4 (ModelManager), so more people are split into runs of up to 4.
     MAX_BATCH = 4
 

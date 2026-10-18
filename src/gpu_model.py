@@ -1,7 +1,7 @@
 """Run a landmark model on a crop that never leaves the GPU.
 
 Profile of a two-people replay on the Orin (nsys): the GPU computed only ~23% of the time. The models are
-hundreds of tiny TensorRT kernels (~900 launches a frame, ~12 us each, about what a launch costs the CPU), and
+hundreds of tiny TensorRT kernels (~900 launches a frame, ~12 us each, about the CPU time of one launch), and
 every crop went GPU -> CPU (download, float) -> GPU (ONNX Runtime's input copy) with a wait at each step.
 
 GpuModel keeps the crop on the GPU: rotate, RGB and float/255 run into one continuous GPU buffer that is bound

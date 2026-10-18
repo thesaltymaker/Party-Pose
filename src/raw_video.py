@@ -1,7 +1,7 @@
 """Uncompressed BGR clips for repeatable benchmarks (`--video`).
 
 A clip is `<path>.bgr` (frames back to back, uint8 HxWx3) plus `<path>.json` (width, height, count, fps). Frames
-are read from disk one at a time, so a long 1080p clip doesn't have to fit in memory, and reading one costs
+are read from disk one at a time, so a long 1080p clip doesn't have to fit in memory, and reading one takes
 about what a camera read does (no video decoding on the Orin's CPU). Each frame is dropped from the file cache
 after it is read: on the Orin the CPU and GPU share memory, and 11 GB of cached clip made the next run's GPU
 allocation fail (NvMap error 12). Frames are read a few ahead in a background thread, as a camera captures

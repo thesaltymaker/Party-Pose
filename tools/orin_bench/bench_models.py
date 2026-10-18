@@ -1,7 +1,7 @@
 """
 Party-Pose diagnostic micro-benchmarks for the Jetson Orin (issue #2).
 
-Runs pieces of the pipeline in isolation so their cost can be compared with the
+Runs pieces of the pipeline in isolation so their time can be compared with the
 per-stage timing that `poser.py --fps` prints from the live app.
 
 Modes (run from anywhere; results and TensorRT caches go to --out-dir):
