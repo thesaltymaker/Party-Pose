@@ -127,6 +127,20 @@ def _boxes_not_followed(body_boxes: List[BoundingBox], pose_boxes) -> List[Bound
     return [b for b in body_boxes if all(overlap_of_smaller(b, p) < 0.4 for p in pose_boxes)]
 
 
+def _load_sessions(model_manager, config, person_proc, face_proc, hand_proc, body_proc) -> None:
+    """Load every model session now, not on first use: a TensorRT session takes 0.2-3 s to load, which froze the
+    picture the first time a batch size was needed (and counted in --video timings)."""
+    if person_proc:
+        model_manager.get_session('person_detector')
+    for name, proc, batch in (('pose_landmarks', body_proc, config.pose_batch),
+                              ('hand_landmarks', hand_proc, config.hand_batch),
+                              ('face_landmarks', face_proc, config.face_batch)):
+        if proc:
+            model_manager.get_session(name)
+            for n in range(1, batch + 1):
+                model_manager.get_batch_session(name, n)
+
+
 def _detect_now(frame_no: int, every: int, tracks, followed, drop_still: bool) -> bool:
     """--detect-every: run the person detector on this frame? Every frame while a live track is not followed by
     its pose (lost, or new and not confirmed yet; a still one with --drop-still doesn't count), else every
@@ -389,6 +403,7 @@ def main():
     face_proc   = FaceProcessor(model_manager, config.face_expressions, config.face_batch) if config.face else None
     hand_proc   = HandProcessor(model_manager, config.hand_batch) if config.hands else None
     body_proc   = BodyProcessor(model_manager, config.pose_batch) if config.body else None
+    _load_sessions(model_manager, config, person_proc, face_proc, hand_proc, body_proc)
 
     tracker     = PersonTracker()
     smoother    = PoseSmoother({k: (mc, b) for k, mc, b in config.smooth_params},
