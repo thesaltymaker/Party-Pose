@@ -7,6 +7,7 @@ import signal
 import threading
 import time
 from pathlib import Path
+from collections.abc import Sequence
 from typing import List, Optional
 import cv2
 import numpy as np
@@ -62,14 +63,29 @@ def _assign_heads(bodies: List[BoundingBox], heads: List[BoundingBox]) -> List[O
     return out
 
 
+class _MovedLandmarks(Sequence):
+    """Landmarks moved by (x - ocx) * s + ncx, (y - ocy) * s + ncy, worked out when read: a ghost face has 478 and the
+    renderer reads only some of them (making them all took ~1.7 ms a frame with --face-every on the Orin)."""
+
+    def __init__(self, landmarks, ocx: float, ocy: float, ncx: float, ncy: float, s: float) -> None:
+        self._lms, self._move = landmarks, (ocx, ocy, ncx, ncy, s)
+
+    def __len__(self) -> int:
+        return len(self._lms)
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return [self[k] for k in range(*i.indices(len(self)))]
+        lm, (ocx, ocy, ncx, ncy, s) = self._lms[i], self._move
+        return Landmark(ncx + (lm.x - ocx) * s, ncy + (lm.y - ocy) * s, lm.z * s, lm.visibility, lm.presence)
+
+
 def _moved_face(face: FaceResult, old_head: BoundingBox, new_head: BoundingBox) -> FaceResult:
     """The face found in old_head, moved and scaled to where the same head is now (a ghost face, issue #13)."""
     ocx, ocy = old_head.x + old_head.w / 2, old_head.y + old_head.h / 2
     ncx, ncy = new_head.x + new_head.w / 2, new_head.y + new_head.h / 2
     s = new_head.w / old_head.w if old_head.w > 0 else 1.0
-    landmarks = [Landmark(ncx + (lm.x - ocx) * s, ncy + (lm.y - ocy) * s, lm.z * s, lm.visibility, lm.presence)
-                 for lm in face.landmarks]
-    return FaceResult(bbox=new_head, landmarks=landmarks, blendshapes=face.blendshapes,
+    return FaceResult(bbox=new_head, landmarks=_MovedLandmarks(face.landmarks, ocx, ocy, ncx, ncy, s), blendshapes=face.blendshapes,
                       person_id=face.person_id, presence=face.presence)
 
 

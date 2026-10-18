@@ -1,6 +1,6 @@
 import math
 
-from src.tracker import STILL_FRAMES, PersonTracker
+from src.tracker import STILL_EVERY, STILL_FRAMES, PersonTracker
 from src.types import BoundingBox
 
 
@@ -210,8 +210,9 @@ def test_still_person_who_starts_moving_is_shown_again_within_about_a_second():
     assert not tr.is_still()
 
 
-def test_is_still_works_out_the_spread_once_per_new_box(monkeypatch):
-    # The app asks up to 3 times per track per frame; the spread of 300 centres costs ~0.25 ms each on the laptop.
+def test_is_still_works_out_the_spread_every_few_new_boxes(monkeypatch):
+    # The app asks up to 3 times per track per frame, and a followed person gets a box every frame; the spread of
+    # 300 centres takes ~0.25 ms each on the laptop.
     import src.tracker as tracker
     t = PersonTracker()
     for _ in range(STILL_FRAMES):
@@ -224,8 +225,8 @@ def test_is_still_works_out_the_spread_once_per_new_box(monkeypatch):
     for f in range(40):
         [tr] = t.update_tracks([_box(900 + 3 * f)])
         tr.is_still()
-    assert len(calls) == 41
-    assert not tr.is_still()  # still worked out from the newest box
+    assert len(calls) == 1 + 40 // STILL_EVERY
+    assert not tr.is_still()
 
 
 def test_dancer_missed_for_a_second_keeps_their_id_after_moving():

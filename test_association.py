@@ -124,6 +124,8 @@ def test_ghost_face_follows_the_head():
     assert [(lm.x, lm.y, lm.z) for lm in moved.landmarks] == [(380, 300, 0), (420, 340, 4)]
     assert moved.person_id == 3 and moved.bbox == new_head
     assert face.landmarks[1].x == 160                       # the stored face is not changed
+    # Moved on access (the renderer reads only some of 478 points): indexing and len work as on a list.
+    assert len(moved.landmarks) == 2 and (moved.landmarks[1].x, moved.landmarks[-1].y) == (420, 340)
 
 
 def test_picture_is_centred_on_a_black_screen_sized_canvas():

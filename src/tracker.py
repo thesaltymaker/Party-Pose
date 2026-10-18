@@ -43,6 +43,7 @@ from typing import Deque, Dict, List, Optional, Tuple
 from src.types import BoundingBox
 
 STILL_FRAMES = 300     # ~10 s at 30 FPS
+STILL_EVERY = 10       # boxes between is_still() spreads once the window is full (followed people: every frame)
 STILL_SPREAD = 0.045   # box centre spread (fraction of box height) below which a track counts as still
 
 
@@ -94,7 +95,7 @@ class Track:
     note: Optional[str] = None  # [NEW-ID] line printed when this new track is confirmed
     history: Deque[Tuple[float, float]] = field(default_factory=lambda: deque(maxlen=300))
     recent: Deque[Tuple[float, float, float]] = field(default_factory=lambda: deque(maxlen=STILL_FRAMES))
-    still: Optional[bool] = None  # is_still() until the next box (the app asks up to 3 times a frame)
+    still: Optional[bool] = None  # is_still() until worked out again (the app asks up to 3 times a frame)
 
     def is_still(self) -> bool:
         """True once the box hasn't moved beyond detector jitter over the last STILL_FRAMES matched frames."""
@@ -274,5 +275,7 @@ class PersonTracker:
                 self.events.append(track.note)
                 track.note = None
         track.history.append((nx, ny))
+        full = len(track.recent) == STILL_FRAMES
         track.recent.append((nx, ny, box.h))
-        track.still = None
+        if not full or track.hits % STILL_EVERY == 0:  # a 10 s window: worked out again every STILL_EVERY boxes
+            track.still = None
