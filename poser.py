@@ -327,7 +327,7 @@ def main():
         sys.exit(1)
 
     person_proc = PersonDetector(model_manager, config.detector_bgr) if any_modality else None
-    face_proc   = FaceProcessor(model_manager, config.face_expressions) if config.face else None
+    face_proc   = FaceProcessor(model_manager, config.face_expressions, config.face_batch) if config.face else None
     hand_proc   = HandProcessor(model_manager, config.hand_batch) if config.hands else None
     body_proc   = BodyProcessor(model_manager, config.pose_batch) if config.body else None
 

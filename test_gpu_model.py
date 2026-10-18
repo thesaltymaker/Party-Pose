@@ -168,3 +168,20 @@ def test_batched_crops_give_the_same_outputs(mm, frame, model, size, outs):
     for t, w in zip(together, swapped):
         assert np.allclose(t[order], w, atol=1e-3), (model, float(np.abs(t[order] - w).max()))
     assert [o.shape[0] for o in gb.run(frame, Ms)] == [5] * len(outs)  # 4 + 1
+
+
+def test_face_batch_sessions_give_the_same_faces(mm, frame):
+    """--face-batch: faces through a session per batch size match GpuFaceBatch (fixed batch 2). Same batch size 2
+    on the same model file: to 1e-3 on the laptop; on the Orin another engine, to 0.5 model pixels."""
+    heads = [BoundingBox(300, 200, 220, 220, 1.0), BoundingBox(1000, 300, 180, 180, 1.0)]
+    ref = FaceProcessor(mm)
+    new = FaceProcessor(mm, batch=4)
+    a = ref.process_many(frame, heads, 1920, 1080, False)
+    ref_logits = list(ref.last_logits)
+    b = new.process_many(frame, heads, 1920, 1080, False)
+    trt = 'TensorrtExecutionProvider' in mm.get_session('face_landmarks').get_providers()
+    assert np.allclose(ref_logits, new.last_logits, atol=0.05 if trt else 1e-3)
+    for fa, fb in zip(a, b):
+        assert (fa is None) == (fb is None)
+        if fa is not None:
+            assert np.allclose(fa.pts, fb.pts, atol=0.5 if trt else 1e-2)

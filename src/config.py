@@ -37,6 +37,7 @@ class Config:
     detector_bgr: bool = False  # feed the person detector BGR (the order YOLOX was trained on) instead of RGB
     pose_batch: int = 0         # followed people's poses in one model run of this many crops (0 = one run each)
     hand_batch: int = 0         # all people's hands in model runs of this many crops (0 = one run per hand)
+    face_batch: int = 0         # faces in model runs of up to this many, a session per batch size (0 = always batch 2)
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -110,6 +111,9 @@ def parse_args() -> Config:
     parser.add_argument("--hand-batch", type=int, default=0, metavar="N",
                         help="Run all people's hands together, N crops per run (needs "
                              "models/hand_landmarks_detector_opset15.dynbatch.onnx; 0 = off)")
+    parser.add_argument("--face-batch", type=int, default=0, metavar="N",
+                        help="Run up to N faces per face model run, with a TensorRT session for each batch size "
+                             "(0 = runs of 2, the second slot unused with one face)")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
@@ -160,4 +164,5 @@ def parse_args() -> Config:
         detector_bgr=args.detector_bgr,
         pose_batch=args.pose_batch,
         hand_batch=args.hand_batch,
+        face_batch=args.face_batch,
     )

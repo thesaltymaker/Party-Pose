@@ -117,7 +117,7 @@ class GpuBatch:
     def __init__(self, model_manager, model: str, input_name: str, outputs: List[str], size: int, slots: int) -> None:
         self.model_manager, self.model = model_manager, model
         self.input_name, self.outputs, self.size, self.slots = input_name, outputs, size, slots
-        self.session = model_manager.get_batch_session(model, 1)
+        self.session = model_manager.get_session(model)  # only to see the providers
         self.on_gpu = any(p in self.session.get_providers()
                           for p in ('TensorrtExecutionProvider', 'CUDAExecutionProvider'))
         self._runs = {}  # batch size -> (session, I/O binding, bound input buffer, bound outputs)
@@ -154,9 +154,28 @@ class GpuBatch:
             outs.append(self._run(frame_gpu, Ms[i:i + self.slots]))
         return [np.concatenate(o) for o in zip(*outs)] if outs else []
 
-    def _run(self, frame_gpu, Ms) -> List[np.ndarray]:
+    def run_rects(self, frame_gpu: cv2.cuda_GpuMat, rects) -> List[np.ndarray]:
+        """The model's outputs [len(rects), ...] for (x, y, w, h) frame rectangles resized to the input, as
+        GpuFaceBatch cuts them (--face-batch)."""
+        outs = []
+        for i in range(0, len(rects), self.slots):
+            outs.append(self._run(frame_gpu, rects[i:i + self.slots], rects=True))
+        return [np.concatenate(o) for o in zip(*outs)] if outs else []
+
+    def _run(self, frame_gpu, Ms, rects: bool = False) -> List[np.ndarray]:
         n, size = len(Ms), self.size
         session, binding, buf, out = self._session(n)
+        if rects:
+            for k, (x, y, w, h) in enumerate(Ms):
+                roi = cv2.cuda_GpuMat(frame_gpu, (int(x), int(y), int(w), int(h)))
+                self._warp[k] = cv2.cuda.resize(roi, (size, size), self._warp[k])
+                self._rgb[k] = cv2.cuda.cvtColor(self._warp[k], cv2.COLOR_BGR2RGB, self._rgb[k])
+                slot = buf.rowRange(k * size, (k + 1) * size)
+                if self._rgb[k].convertTo(cv2.CV_32FC3, slot, 1 / 255.0, 0.0).cudaPtr() != slot.cudaPtr():
+                    raise RuntimeError('crop was not written into the bound GPU batch buffer')
+            self._stream.waitForCompletion()  # ONNX Runtime's stream doesn't wait for OpenCV's (see GpuModel._run)
+            session.run_with_iobinding(binding)
+            return [v.numpy() for v in out]
         if not self.on_gpu:
             batch = np.concatenate([Preprocessor.crop_rotated_nhwc(frame_gpu, M, size).copy() for M in Ms])
             return session.run(self.outputs, {self.input_name: batch})

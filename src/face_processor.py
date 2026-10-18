@@ -3,7 +3,7 @@ import numpy as np
 from typing import List, Optional
 from src.types import BoundingBox, FaceResult
 from src.model_manager import ModelManager
-from src.gpu_model import gpu_face_batch
+from src.gpu_model import gpu_batch, gpu_face_batch
 from src.preprocessor import Preprocessor
 from src.topology import CANONICAL_BLENDSHAPE_INDICES
 
@@ -41,8 +41,9 @@ class FaceProcessor:
     # is built for batches of 1-4 (ModelManager), so more people are split into runs of up to 4.
     MAX_BATCH = 4
 
-    def __init__(self, model_manager: ModelManager, enable_blendshapes: bool = False) -> None:
+    def __init__(self, model_manager: ModelManager, enable_blendshapes: bool = False, batch: int = 0) -> None:
         self.model_manager = model_manager
+        self.batch = batch  # --face-batch: up to this many faces per run, a session per batch size (0 = GpuFaceBatch)
         self.enable_blendshapes = enable_blendshapes
         self.last_logit: Optional[float] = None  # face score logit of the last process() call, kept or not
         self.last_logits: List[float] = []       # the same for each head of the last process_many() call
@@ -66,15 +67,21 @@ class FaceProcessor:
         if not head_bboxes:
             self.last_logits = []
             return []
-        gpu = gpu_face_batch(self.model_manager)
+        gpu = gpu_batch(self.model_manager, 'face_landmarks', 'input_12', ['Identity', 'Identity_1'], self.LANDMARK_W,
+                        self.batch) if self.batch else gpu_face_batch(self.model_manager)
         raws, logits = [], []
         if gpu.on_gpu:
             rects = [Preprocessor.crop_rect(head, 0.0, frame_w, frame_h) for head in head_bboxes]
             crop_boxes = [BoundingBox(x, y, w, h, head.confidence) for (x, y, w, h), head in zip(rects, head_bboxes)]
-            for i in range(0, len(rects), gpu.SLOTS):
-                lms, lg = gpu.run(frame_gpu, rects[i:i + gpu.SLOTS])
-                raws.extend(lms)
-                logits.extend(float(v) for v in lg)
+            if self.batch:
+                lms, lg = gpu.run_rects(frame_gpu, rects)
+                raws.extend(lms.reshape(-1, 478, 3))
+                logits.extend(float(v) for v in lg.reshape(-1))
+            else:
+                for i in range(0, len(rects), gpu.SLOTS):
+                    lms, lg = gpu.run(frame_gpu, rects[i:i + gpu.SLOTS])
+                    raws.extend(lms)
+                    logits.extend(float(v) for v in lg)
         else:
             crops = [Preprocessor.crop_roi_nhwc(frame_gpu, head, self.LANDMARK_W, self.LANDMARK_H,
                                                 pad_fraction=0.0, frame_w=frame_w, frame_h=frame_h)
