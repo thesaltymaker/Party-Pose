@@ -35,6 +35,8 @@ class Config:
     skelly: bool = False        # filled bone-coloured face with eyes, nose and mouth cut out
     santa_hat: bool = False     # Santa hat on each face
     detector: str = ""          # person detector model file in models/ ("" = the default YOLOX nano 320x256)
+    pose_model: str = ""        # pose landmark model file in models/ ("" = the full model)
+    hand_model: str = ""        # hand landmark model file in models/ ("" = the default one)
     detector_bgr: bool = False  # feed the person detector BGR (the order YOLOX was trained on) instead of RGB
     detector_area: bool = False  # shrink the frame for the person detector by averaging pixels (INTER_AREA)
     ghost_follow_wrist: bool = False  # a ghost hand moves with its pose wrist instead of staying where it was lost
@@ -113,6 +115,11 @@ def parse_args() -> Config:
     parser.add_argument("--detector", default="", metavar="FILE",
                         help="Person detector model file in models/ (NHWC input; tools/orin_bench/detector_nhwc.py "
                              "makes one from a PINTO model zoo YOLOX-Body-Head-Hand model; default: the YOLOX nano 320x256)")
+    parser.add_argument("--pose-model", default="", metavar="FILE",
+                        help="Pose landmark model file in models/ (e.g. the lite one, "
+                             "pose_landmarks_detector_lite_opset15.onnx); with --pose-batch it needs a .dynbatch.onnx copy")
+    parser.add_argument("--hand-model", default="", metavar="FILE",
+                        help="Hand landmark model file in models/ (same layout as the default one)")
     parser.add_argument("--detector-bgr", action="store_true",
                         help="Feed the person detector the frame in BGR order, as the model was trained, instead of RGB "
                              "(finds more people)")
@@ -192,6 +199,8 @@ def parse_args() -> Config:
         skelly=args.skelly,
         santa_hat=args.santa_hat,
         detector=args.detector,
+        pose_model=args.pose_model,
+        hand_model=args.hand_model,
         detector_bgr=args.detector_bgr,
         detector_area=args.detector_area,
         ghost_follow_wrist=args.ghost_follow_wrist,

@@ -45,7 +45,8 @@ class ModelManager:
         },
     }
 
-    def __init__(self, models_dir: Path, platform: str = "laptop", detector: str = "") -> None:
+    def __init__(self, models_dir: Path, platform: str = "laptop", detector: str = "", pose_model: str = "",
+                 hand_model: str = "") -> None:
         self.models_dir = models_dir
         self.platform = platform
         self._sessions: Dict[str, ort.InferenceSession] = {}
@@ -53,6 +54,11 @@ class ModelManager:
             self._MODEL_FILES = {**self._MODEL_FILES, self.person_detector: detector}
             self._TRT_MODEL_FILE_OVERRIDES = {**self._TRT_MODEL_FILE_OVERRIDES,
                                               self.person_detector: detector[:-len('.onnx')] + '.shapeinferred.onnx'}
+
+        if pose_model:  # --pose-model FILE in models/
+            self._MODEL_FILES = {**self._MODEL_FILES, self.pose_landmarks: pose_model}
+        if hand_model:
+            self._MODEL_FILES = {**self._MODEL_FILES, self.hand_landmarks: hand_model}
 
     def validate(self, required: List[str]) -> None:
         missing_files = []

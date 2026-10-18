@@ -114,3 +114,22 @@ def test_detector_shrinks_with_linear_unless_detector_area():
         assert parse_args().detector_area is False
     with patch("sys.argv", ["poser.py", "--detector-area"]):
         assert parse_args().detector_area is True
+
+
+def test_pose_and_hand_model_files_can_be_chosen():
+    from pathlib import Path
+    from unittest.mock import patch
+    from src.config import parse_args
+    from src.model_manager import ModelManager
+    with patch("sys.argv", ["poser.py"]):
+        args = parse_args()
+    assert args.pose_model == "" and args.hand_model == ""
+    with patch("sys.argv", ["poser.py", "--pose-model", "lite.onnx", "--hand-model", "h.onnx"]):
+        args = parse_args()
+    assert (args.pose_model, args.hand_model) == ("lite.onnx", "h.onnx")
+    default = ModelManager(Path("models"), platform="orin")
+    other = ModelManager(Path("models"), platform="orin", pose_model="lite.onnx", hand_model="h.onnx")
+    assert other._MODEL_FILES["pose_landmarks"] == "lite.onnx"
+    assert other._MODEL_FILES["hand_landmarks"] == "h.onnx"
+    assert default._MODEL_FILES["pose_landmarks"] == "pose_landmarks_detector_opset15.onnx"
+    assert ModelManager._MODEL_FILES["pose_landmarks"] == default._MODEL_FILES["pose_landmarks"]

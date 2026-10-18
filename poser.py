@@ -308,7 +308,8 @@ def _run_pipelined(produce, consume) -> None:
 def main():
     config = parse_args()
     models_dir = Path(__file__).parent / 'models'
-    model_manager = ModelManager(models_dir, platform=config.platform, detector=config.detector)
+    model_manager = ModelManager(models_dir, platform=config.platform, detector=config.detector,
+                                 pose_model=config.pose_model, hand_model=config.hand_model)
 
     any_modality = config.face or config.hands or config.body
     required_models = []
