@@ -38,6 +38,7 @@ class Config:
     pose_batch: int = 0         # followed people's poses in one model run of this many crops (0 = one run each)
     hand_batch: int = 0         # all people's hands in model runs of this many crops (0 = one run per hand)
     face_batch: int = 0         # faces in model runs of up to this many, a session per batch size (0 = always batch 2)
+    switch_ms: float = 0.0      # Python thread switch interval in ms (0 = Python's default, 5 ms)
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -114,6 +115,9 @@ def parse_args() -> Config:
     parser.add_argument("--face-batch", type=int, default=0, metavar="N",
                         help="Run up to N faces per face model run, with a TensorRT session for each batch size "
                              "(0 = runs of 2, the second slot unused with one face)")
+    parser.add_argument("--switch-ms", type=float, default=0.0, metavar="MS",
+                        help="Python's thread switch interval: with --pipeline, how long the model thread may wait "
+                             "for the drawing thread to let go of the interpreter (0 = Python's default, 5 ms)")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
@@ -165,4 +169,5 @@ def parse_args() -> Config:
         pose_batch=args.pose_batch,
         hand_batch=args.hand_batch,
         face_batch=args.face_batch,
+        switch_ms=args.switch_ms,
     )

@@ -688,6 +688,8 @@ def main():
                 counts[k] = 0
         return True
 
+    if config.switch_ms > 0:
+        sys.setswitchinterval(config.switch_ms / 1000)
     rendered, t_start = 0, time.monotonic()
     label_t0 = None  # when the first picture was shown, for the --test-label seconds counter
     try:
