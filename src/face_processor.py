@@ -23,6 +23,29 @@ def face_box_from_pose(pose, scale: float = FACE_FROM_POSE_SCALE) -> BoundingBox
     return BoundingBox(cx - side / 2, cy - side / 2, side, side, 1.0)
 
 
+# --face-hold: a face kept last frame is kept while its logit stays at or above the hold value and the head is less
+# than this turned (head_turn). Rejected faces in the evening and dance clips are mostly real faces, blurred or seen
+# from below (logit -1 to -13); side-on heads and backs of heads give head_turn >= 0.4.
+FACE_HOLD_TURN = 0.4
+
+
+def head_turn(pose) -> float:
+    """How far the head is turned, from the pose: the nose's x off the ears' middle, in ear distances (0 facing the
+    camera, about +-0.5 side on). 0 when the ears are less than a pixel apart."""
+    ears = pose[7].x - pose[8].x
+    if abs(ears) < 1:
+        return 0.0
+    return (pose[0].x - (pose[7].x + pose[8].x) / 2) / abs(ears)
+
+
+def face_min_logit(pose, held: bool, hold_logit: float) -> float:
+    """The face logit a person's face needs this frame: 0 (presence 0.5), or hold_logit when it was kept last frame
+    and the pose's head is not turned away (--face-hold)."""
+    if held and pose is not None and abs(head_turn(pose)) < FACE_HOLD_TURN:
+        return min(0.0, hold_logit)
+    return 0.0
+
+
 class FaceProcessor:
     """Runs face landmark inference on a pre-detected head bounding box.
 
@@ -60,9 +83,10 @@ class FaceProcessor:
         return face
 
     def process_many(self, frame_gpu, head_bboxes: List[BoundingBox], frame_w: int, frame_h: int,
-                     mirror: bool) -> List[Optional[FaceResult]]:
+                     mirror: bool, min_logits: Optional[List[float]] = None) -> List[Optional[FaceResult]]:
         """One FaceResult (or None when the face score is too low) per head box, in order. All heads go through
-        the face model together, up to MAX_BATCH per run."""
+        the face model together, up to MAX_BATCH per run. min_logits: the logit each face needs (face_min_logit);
+        without it, presence PRESENCE_THRESHOLD."""
         if not head_bboxes:
             self.last_logits = []
             return []
@@ -87,13 +111,14 @@ class FaceProcessor:
                 raws.extend(landmarks_raw.reshape(-1, 478, 3))
                 logits.extend(float(v) for v in presence_logit.reshape(-1))
         self.last_logits = logits
-        return [self._result(head, crop_bbox, raw, logit, frame_w, frame_h, mirror)
-                for head, crop_bbox, raw, logit in zip(head_bboxes, crop_boxes, raws, logits)]
+        mins = min_logits or [None] * len(raws)
+        return [self._result(head, crop_bbox, raw, logit, frame_w, frame_h, mirror, m)
+                for head, crop_bbox, raw, logit, m in zip(head_bboxes, crop_boxes, raws, logits, mins)]
 
     def _result(self, head_bbox: BoundingBox, crop_bbox: BoundingBox, raw: np.ndarray, logit: float,
-                frame_w: int, frame_h: int, mirror: bool) -> Optional[FaceResult]:
+                frame_w: int, frame_h: int, mirror: bool, min_logit: Optional[float] = None) -> Optional[FaceResult]:
         presence = float(1.0 / (1.0 + np.exp(-np.clip(logit, -50, 50))))
-        if presence < self.PRESENCE_THRESHOLD:
+        if presence < self.PRESENCE_THRESHOLD if min_logit is None else logit < min_logit:
             return None
         landmarks = Preprocessor.to_image_space(raw, self.LANDMARK_W, self.LANDMARK_H,
                                                 crop_bbox, frame_w, frame_h, mirror)

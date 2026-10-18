@@ -14,7 +14,7 @@ from src.config import parse_args
 from src.model_manager import ModelManager
 from src.video_capture import VideoCaptureModule
 from src.person_detector import PersonDetector, PersonDetections
-from src.face_processor import FaceProcessor, face_box_from_pose
+from src.face_processor import FaceProcessor, face_box_from_pose, face_min_logit
 from src.hand_processor import HandProcessor
 from src.body_processor import BodyProcessor
 from src.renderer import Renderer
@@ -376,6 +376,7 @@ def main():
     flicker = FlickerCounter()  # [FLICKER] blink counts per part, printed at the end of a --video run
     frame_no = 0
     face_logits: List[float] = []  # face model logits of drawn faces, for tuning FACE_VERIFY_PRESENCE
+    face_held = set()  # track ids whose face was kept last frame (--face-hold)
 
     dump_dir = Path(config.dump_detections) if config.dump_detections else None
     if dump_dir:
@@ -489,8 +490,10 @@ def main():
                 with_box = [k for k, box in enumerate(face_boxes) if box is not None]
                 if with_box:
                     t = time.perf_counter()
+                    mins = ([face_min_logit(bodies[k] and bodies[k].landmarks, people[k][0].id in face_held,
+                                            config.face_hold) for k in with_box] if config.face_hold else None)
                     faces = face_proc.process_many(frame_gpu, [face_boxes[k] for k in with_box], frame_w, frame_h,
-                                                   config.mirror)
+                                                   config.mirror, mins)
                     faces_by_person = dict(zip(with_box, zip(faces, face_proc.last_logits)))
                     stage_ms['face'] += (time.perf_counter() - t) * 1000
                     counts['faces_run'] += len(with_box)
@@ -555,6 +558,9 @@ def main():
                 last_report = time.monotonic()
                 for line in track_stats.report({t.id for t in tracker.tracks + tracker.lost}):
                     print(line, flush=True)
+
+        face_held.clear()
+        face_held.update(pid for pid, part in seen if part == 'face')
 
         if smoother:
             t = time.perf_counter()
