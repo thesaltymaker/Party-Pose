@@ -29,6 +29,7 @@ class Preprocessor:
         target_w: int,
         target_h: int,
         normalize: bool = True,
+        interpolation: int = cv2.INTER_LINEAR,
     ) -> np.ndarray:
         """Letterbox the full frame to target dims and return a [1, H, W, 3] float32 array.
 
@@ -41,7 +42,7 @@ class Preprocessor:
         new_h = int(round(frame_h * scale))
 
         # Resize first: converting the whole 1080p frame cost 1.3 ms on the Orin, the small image almost nothing.
-        resized_gpu = cv2.cuda.resize(frame_gpu, (new_w, new_h))
+        resized_gpu = cv2.cuda.resize(frame_gpu, (new_w, new_h), interpolation=interpolation)
         resized = cv2.cuda.cvtColor(resized_gpu, cv2.COLOR_BGR2RGB).download()
 
         padded = np.zeros((target_h, target_w, 3), dtype=np.uint8)

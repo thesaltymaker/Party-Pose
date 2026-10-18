@@ -35,6 +35,7 @@ class Config:
     santa_hat: bool = False     # Santa hat on each face
     detector: str = ""          # person detector model file in models/ ("" = the default YOLOX nano 320x256)
     detector_bgr: bool = False  # feed the person detector BGR (the order YOLOX was trained on) instead of RGB
+    detector_area: bool = False  # shrink the frame for the person detector by averaging pixels (INTER_AREA)
 
 def detect_platform() -> str:
     """Detect whether we are running on an NVIDIA Jetson (Orin) board."""
@@ -102,6 +103,9 @@ def parse_args() -> Config:
     parser.add_argument("--detector-bgr", action="store_true",
                         help="Feed the person detector the frame in BGR order, as the model was trained, instead of RGB "
                              "(finds more people)")
+    parser.add_argument("--detector-area", action="store_true",
+                        help="Shrink the frame for the person detector by averaging pixels (INTER_AREA) instead of "
+                             "INTER_LINEAR: less camera grain in a dim room")
     parser.set_defaults(face=True, body=True, hands=True, require_face=False)
     # Platform argument
     parser.add_argument(
@@ -150,4 +154,5 @@ def parse_args() -> Config:
         santa_hat=args.santa_hat,
         detector=args.detector,
         detector_bgr=args.detector_bgr,
+        detector_area=args.detector_area,
     )

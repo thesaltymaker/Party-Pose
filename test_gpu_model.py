@@ -136,3 +136,13 @@ def test_detector_bgr_input_on_the_gpu_matches_the_numpy_path(mm, frame):
                                                         {'input': np.ascontiguousarray(arr)})[0]
     assert got.shape == ref.shape
     assert np.allclose(got, ref, atol=1e-3), float(np.abs(got - ref).max())
+
+
+def test_detector_area_input_on_the_gpu_matches_the_numpy_path(mm, frame):
+    det = PersonDetector(mm, area=True)
+    det.process(frame, 1920, 1080)
+    got = det._gpu.run(frame, 1920, 1080)
+    arr = Preprocessor.full_frame_nhwc(frame, det.INPUT_W, det.INPUT_H, normalize=False, interpolation=cv2.INTER_AREA)
+    ref = _reference_session(mm, 'person_detector').run(['batchno_classid_score_x1y1x2y2'], {'input': arr})[0]
+    assert got.shape == ref.shape
+    assert np.allclose(got, ref, atol=1e-3), float(np.abs(got - ref).max())

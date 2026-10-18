@@ -106,3 +106,11 @@ def test_detector_gets_rgb_unless_detector_bgr():
         assert parse_args().detector_bgr is False
     with patch("sys.argv", ["poser.py", "--detector-bgr"]):
         assert parse_args().detector_bgr is True
+
+
+def test_detector_shrinks_with_linear_unless_detector_area():
+    from src.config import parse_args
+    with patch("sys.argv", ["poser.py"]):
+        assert parse_args().detector_area is False
+    with patch("sys.argv", ["poser.py", "--detector-area"]):
+        assert parse_args().detector_area is True

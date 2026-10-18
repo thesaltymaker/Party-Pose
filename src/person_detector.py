@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -36,9 +37,10 @@ class PersonDetector:
     CLASS_HEAD = 1
     CLASS_HAND = 2
 
-    def __init__(self, model_manager: ModelManager, bgr: bool = False) -> None:
+    def __init__(self, model_manager: ModelManager, bgr: bool = False, area: bool = False) -> None:
         self.model_manager = model_manager
         self.bgr = bgr  # feed BGR, the colour order the model was trained on (--detector-bgr); default RGB
+        self.interpolation = cv2.INTER_AREA if area else cv2.INTER_LINEAR  # --detector-area: average, less grain
         self._gpu: Optional[GpuDetectorInput] = None  # created on first use (loads the session)
 
     def process(self, frame_gpu, frame_w: int, frame_h: int) -> PersonDetections:
@@ -46,11 +48,12 @@ class PersonDetector:
         if self._gpu is None:
             _, self.INPUT_H, self.INPUT_W, _ = session.get_inputs()[0].shape  # NHWC [1, H, W, 3]
             self._gpu = GpuDetectorInput(session, 'input', 'batchno_classid_score_x1y1x2y2', self.INPUT_W, self.INPUT_H,
-                                         self.bgr)
+                                         self.bgr, self.interpolation)
         if self._gpu.on_gpu:
             raw = self._gpu.run(frame_gpu, frame_w, frame_h)
         else:
-            arr = Preprocessor.full_frame_nhwc(frame_gpu, self.INPUT_W, self.INPUT_H, normalize=False)
+            arr = Preprocessor.full_frame_nhwc(frame_gpu, self.INPUT_W, self.INPUT_H, normalize=False,
+                                               interpolation=self.interpolation)
             if self.bgr:
                 arr = np.ascontiguousarray(arr[..., ::-1])
             raw = session.run(['batchno_classid_score_x1y1x2y2'], {'input': arr})[0]
