@@ -3,6 +3,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import subprocess
+import time
 from typing import Tuple, Optional
 
 NIGHT_GAIN_MAX = 171
@@ -66,6 +67,8 @@ class NightModeDetector:
 class VideoCaptureModule:
     """GPU-resident video capture module for pose detection applications."""
 
+    REOPEN_TRIES = 5  # a failed camera read opens the camera again this many times before giving up
+
     def __init__(self, config: 'Config') -> None:
         self._clip = None
         self.clip_fps = 0.0
@@ -85,10 +88,12 @@ class VideoCaptureModule:
                 f"video/x-raw, format=(string)BGRx ! videoconvert ! "
                 f"video/x-raw, format=(string)BGR ! appsink drop=True"
             )
-            self._cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+            self._cap_args = (gst_str, cv2.CAP_GSTREAMER)
         else:
             # Default laptop / other platform
-            self._cap = cv2.VideoCapture(config.camera)
+            self._cap_args = (config.camera,)
+        if not video:
+            self._cap = cv2.VideoCapture(*self._cap_args)
 
         if self._clip is not None:
             self.width, self.height = self._clip.width, self._clip.height
@@ -116,7 +121,7 @@ class VideoCaptureModule:
         else:
             ret, frame = self._cap.read()
             if not ret:
-                raise RuntimeError('Camera read failed')
+                frame = self._reopen()
 
         gpu_frame = self._gpu_frames[self._next]
         self._next = (self._next + 1) % len(self._gpu_frames)
@@ -132,6 +137,19 @@ class VideoCaptureModule:
             gpu_frame = cv2.cuda.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
         return gpu_frame
+
+    def _reopen(self) -> np.ndarray:
+        """The camera gave no frame (Orin, L4T 36.4.7: Argus could not get a frame buffer, NvMap error 12): open it
+        again instead of stopping the show. RuntimeError after REOPEN_TRIES tries."""
+        for n in range(1, self.REOPEN_TRIES + 1):
+            print(f'[CAMERA] read failed, opening the camera again (try {n} of {self.REOPEN_TRIES})', flush=True)
+            self._cap.release()
+            time.sleep(1.0)
+            self._cap = cv2.VideoCapture(*self._cap_args)
+            ret, frame = self._cap.read()
+            if ret:
+                return frame
+        raise RuntimeError('Camera read failed')
 
     def keep_frames(self, n: int) -> None:
         """Upload each frame into the next of N GPU buffers, so the last N frames stay valid (--detect-ahead)."""
