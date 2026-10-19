@@ -13,6 +13,9 @@ the people in the room know when to perform:
 brightness and its share of blown-out pixels are logged; they are saved in CLIP.json with --light and --lux.
 """
 import argparse
+import functools
+import re
+import subprocess
 import sys
 import threading
 import time
@@ -35,9 +38,16 @@ WINDOW = 'Party-Pose recording'
 BLACK = False  # --black: the monitor stays dark, so the screen does not light the room
 
 
+@functools.cache
+def _screen_hw() -> tuple:
+    out = subprocess.run(['xrandr', '--current'], capture_output=True, text=True, timeout=5).stdout
+    m = re.search(r' connected (?:primary )?(\d+)x(\d+)\+', out)
+    return (int(m.group(2)), int(m.group(1))) if m else (1200, 1920)
+
+
 def _show(frame, text: str, colour) -> None:
     if BLACK:
-        view = np.zeros((1080, 1920, 3), np.uint8)  # full-screen size: a small image leaves the window white
+        view = np.zeros((*_screen_hw(), 3), np.uint8)  # screen-sized: a smaller image leaves the window white
         cv2.putText(view, text, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 60), 2)
         cv2.imshow(WINDOW, view)
         cv2.waitKey(1)
