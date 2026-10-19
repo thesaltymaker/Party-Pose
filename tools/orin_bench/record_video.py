@@ -37,7 +37,9 @@ BLACK = False  # --black: the monitor stays dark, so the screen does not light t
 
 def _show(frame, text: str, colour) -> None:
     if BLACK:
-        cv2.imshow(WINDOW, np.zeros((64, 64, 3), np.uint8))
+        view = np.zeros((1080, 1920, 3), np.uint8)  # full-screen size: a small image leaves the window white
+        cv2.putText(view, text, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 60), 2)
+        cv2.imshow(WINDOW, view)
         cv2.waitKey(1)
         return
     view = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
