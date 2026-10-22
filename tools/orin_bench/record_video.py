@@ -13,6 +13,9 @@ the people in the room know when to perform:
 brightness and its share of blown-out pixels are logged; they are saved in CLIP.json with --light and --lux.
 """
 import argparse
+import functools
+import re
+import subprocess
 import sys
 import threading
 import time
@@ -20,6 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
+import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
@@ -31,7 +35,23 @@ from src.video_capture import VideoCaptureModule, query_gain_exposure  # noqa: E
 WINDOW = 'Party-Pose recording'
 
 
+BLACK = False  # --black: the monitor stays dark, so the screen does not light the room
+
+
+@functools.cache
+def _screen_hw() -> tuple:
+    out = subprocess.run(['xrandr', '--current'], capture_output=True, text=True, timeout=5).stdout
+    m = re.search(r' connected (?:primary )?(\d+)x(\d+)\+', out)
+    return (int(m.group(2)), int(m.group(1))) if m else (1200, 1920)
+
+
 def _show(frame, text: str, colour) -> None:
+    if BLACK:
+        view = np.zeros((*_screen_hw(), 3), np.uint8)  # screen-sized: a smaller image leaves the window white
+        cv2.putText(view, text, (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 60), 2)
+        cv2.imshow(WINDOW, view)
+        cv2.waitKey(1)
+        return
     view = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
     scale = view.shape[0] / 300
     cv2.putText(view, text, (20, int(60 * scale)), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), int(8 * scale))
@@ -55,7 +75,10 @@ def main() -> None:
     ap.add_argument('--label', default='dance!', help='what to do, shown on the monitor')
     ap.add_argument('--light', default='', help='the room light, saved with the clip (e.g. "lamps on, blinds shut")')
     ap.add_argument('--lux', type=float, default=None, help='a light meter reading at the dancers, saved with the clip')
+    ap.add_argument('--black', action='store_true', help='show a black screen instead of the preview (low-light recording)')
     args = ap.parse_args()
+    global BLACK
+    BLACK = args.black
 
     Path(args.clip).parent.mkdir(parents=True, exist_ok=True)
     cap = VideoCaptureModule(SimpleNamespace(platform=detect_platform(), camera=args.camera, mirror=False, video=None))
