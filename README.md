@@ -202,7 +202,7 @@ A separate service plays `~/Projects/Video_Projects/Music` through USB speakers,
 sh tools/orin_setup/install_audio_service.sh
 ```
 
-Music files are copied to the Orin by hand and are not kept in the repo. Mode (`sorted`, `random`, `playlist`), volume and other settings are in `~/.config/party-pose/party-pose-audio.env`; after changing them or adding files, run `systemctl --user restart party-pose-audio`. Install options, the button list and the test checklist are in `tools/orin_setup/README.md`; the design is in `architecture.md` section g.
+Music files are never tracked in the repo. Which files to play, and how they get onto the Orin (copy, sync, USB stick), is up to whoever sets it up. Mode (`sorted`, `random`, `playlist`), volume and other settings are in `~/.config/party-pose/party-pose-audio.env`; after changing them or adding files, run `systemctl --user restart party-pose-audio`. Install options, the button list and the test checklist are in `tools/orin_setup/README.md`; the design is in `architecture.md` section g.
 
 ## Debugging detections
 
