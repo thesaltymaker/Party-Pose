@@ -16,12 +16,13 @@ The Orin runs Party-Pose at the Halloween party (2026-10-31). Music from the sam
 - No speakers at boot: the service waits quietly and starts when they appear. No restart loop, no errors in the log.
 - Three modes, set in an env file: `sorted` (default, filename order), `random`, `playlist`. All loop forever.
 - Installed and removed by one script. `--uninstall` removes everything the installer added.
+- The speaker's own buttons work with no keyboard: Next, Previous and Play/Pause control the playlist. Volume and Mute are left to the desktop, which already handles them for the default sink.
 - No effect on Party-Pose: no GPU use, low CPU, so the 30 FPS floor holds.
 
 ## Non-goals
 
 - Syncing music to the Orin. The owner copies files by hand.
-- Switching mode or track while running, volume buttons, a web page or any UI.
+- Switching mode while running, a web page or any UI. Volume buttons are not handled by this service. The speaker's Stop button does nothing.
 - Resuming at the exact position inside a track.
 - Bluetooth or HDMI audio.
 
@@ -44,6 +45,12 @@ The Orin runs Party-Pose at the Halloween party (2026-10-31). Music from the sam
 These are decisions made in the design conversation, plus calls marked **(my call)** that were not discussed with the owner.
 
 - **Player:** `mpv --no-video`, one process, started with the track list. It plays to the chosen USB sink with `--audio-device=pulse/<sink-name>`. A file it cannot decode is skipped. **(my call)**
+- **Speaker buttons:** the Logitech speaker appears as an input device (`/dev/input/by-id/usb-Logitech_Logitech_USB_Speaker-event-if02`, event5 on 2026-10-22) with keys Mute, Volume Down/Up, Next Song, Play/Pause, Previous Song, Stop. The watcher finds that device by its `by-id` name containing the same `SINK_MATCH` text and reads its raw events (no `python3-evdev` on the Orin, so parse the 24-byte `input_event` records with `struct`). Key press (not release) maps to mpv's control socket (`--input-ipc-server`, JSON commands, confirmed working with mpv 0.34 on the Orin):
+  - Next Song: `playlist-next`. Previous Song: `playlist-prev`. In `random` mode these move through the shuffled order. Past either end the list wraps (the playlist loops).
+  - Play/Pause: `cycle pause`. Pause is cleared when the player is restarted after a reconnect. **(my call)**
+  - Stop, Mute and the volume keys: ignored by this service.
+  - Buttons do nothing while the player is not running. The device vanishing (unplug) ends the reader; it is reopened when the speaker returns.
+  - **Permission:** `/dev/input/event*` is `root:input` and the user is not in `input`. The installer adds a udev rule that makes the matching USB audio input device readable by group `audio` (the user is already in it), reloads udev, and does not add the user to `input`. **(my call; it takes effect with no re-login and gives no access to the keyboard or mouse.)** `--uninstall` removes the rule.
 - **Watcher:** a small script (`audio_watch.sh` or Python, builder's choice) polls `pactl list short sinks` about every 2 seconds. A USB speaker is a sink whose name contains `SINK_MATCH` (env file, default `usb`, case-insensitive). If several match, use the first. **(my call)** A failing `pactl` (no audio server yet) counts as "no speakers": no error, keep polling. Polling, not udev, because it needs no root and works the same after any hot plug.
   - USB sink present and player not running: start the player.
   - USB sink gone and player running: stop the player.
@@ -63,12 +70,14 @@ These are decisions made in the design conversation, plus calls marked **(my cal
 ## Testing
 
 - Unit tests for the decision logic with `pactl` and `mpv` replaced by stubs: USB sink detection from sample `pactl` output (USB present, USB absent, only built-in sink, two USB sinks), the file list per mode (extensions, sort order, playlist missing or empty, unknown mode), and the start/stop/restart decisions (present then gone then present).
-- On the Orin, owner-visible checks, one at a time: plug in the speakers and hear music in sorted order; unplug and hear silence; plug back in and hear it resume; boot with the speakers unplugged and check the log is quiet and music starts on plug in; confirm Party-Pose FPS is unchanged with music playing; run `--uninstall` and confirm nothing is left running.
+- Unit tests for the button reader: feed recorded raw `input_event` bytes (press and release of Next, Previous, Play/Pause, Stop and an unrelated key) and check which mpv command is sent, with press-only handling.
+- On the Orin, owner-visible checks, one at a time (add: press Next, Previous and Play/Pause on the speaker and hear the change; press Volume Up/Down and check the desktop level changes): plug in the speakers and hear music in sorted order; unplug and hear silence; plug back in and hear it resume; boot with the speakers unplugged and check the log is quiet and music starts on plug in; confirm Party-Pose FPS is unchanged with music playing; run `--uninstall` and confirm nothing is left running.
 - `systemd-analyze --user verify` on the generated unit.
 
 ## Left to the builder
 
 - Shell or Python for the watcher, and the exact poll interval and restart delays.
 - Exact log wording.
-- How the track that was playing is tracked (mpv's IPC socket or its output).
+- How the track that was playing is tracked (mpv's IPC socket `playlist-pos` property is the obvious way, now that the socket exists for the buttons).
+- The exact udev match for the speaker's input device.
 - README section wording in `tools/orin_setup/README.md`.
