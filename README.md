@@ -153,7 +153,7 @@ Options for the Orin service (all off by default; values in `tools/orin_setup/se
 | `--score-smooth A`, `--smooth-body/face/hand MIN_CUTOFF,BETA`, `--ghost-frames N` | smooth figures, fewer blinks |
 | `--pose-batch N --hand-batch N --face-batch N` | run all people's poses, hands, faces in batched model calls |
 | `--detect-every N` | person detector every Nth frame while everyone is followed |
-| `--hand-every N --face-every N` | each person's hands/face model every Nth frame, last result drawn between |
+| `--hand-every N --face-every N` | each person's hands/face model every Nth frame, last result drawn between (not in the service: looked steppy live) |
 | `--video CLIP`, `--motion-stats`, `--test-label TEXT` | replay a recorded clip; joint pops/jitter/lag; on-screen test label |
 
 Findings behind these: `docs/issue-13-party-readiness.md`.
@@ -165,8 +165,11 @@ Typical performance on NVIDIA GPUs:
 - With TensorRT: +20-30% improvement
 
 Jetson Orin Nano Super (`python poser.py --platform orin --fps`, 1080p CSI camera, all models on TensorRT):
-- With the service settings (2026-10-18, `--pipeline`, recorded clips): ~60-66 FPS with one person, ~42 with two,
-  ~34 with three dancers, ~31 with four people; live the camera gives 30. Details: `docs/issue-13-party-readiness.md`.
+- With the service settings (2026-10-22, `--pipeline`, recorded clips): ~43 FPS with two people, ~34 with three
+  dancers, ~29 with four people; live the camera gives 30 and the FPS counter is in the lower right corner (`--fps`).
+  Details: `docs/issue-13-party-readiness.md`.
+- If the camera fails to deliver a frame (Argus "InsufficientMemory", NvMap error 12, NVIDIA bug 5602402, fixed in
+  L4T 36.5), the app releases and opens it again, up to 5 tries 1 s apart, instead of stopping the show.
 - Needs `sudo jetson_clocks` (resets on reboot). Without it the GPU governor downclocks to about 408 MHz and inference runs about 2× slower.
 - `--fps` also prints per-stage timings (`[STAGES ms/frame]`), detections per frame and each model's execution provider (`[PROVIDERS]`).
 - Benchmark tools: `tools/orin_bench/`. Details: `docs/orin-fps-issue-2.md`.

@@ -43,7 +43,7 @@ techniques, with what each one gave.
 
 | **Load every session at startup** (each batch size too) | `poser._load_sessions` | no 1-3 s freeze when a new number of people appears; replays no longer count the load |
 | **Batch per batch size** (`--pose-batch 4 --hand-batch 4 --face-batch 4`, one TensorRT session per size) | `GpuBatch` | +2.2 FPS with 3-4 people |
-| **Hands and faces every 2nd frame per person** (`--hand-every 2 --face-every 2`) | `ghosts.skip_turn` | +1.2-1.4 FPS, fewer blinks |
+| Hands and faces every 2nd frame per person (`--hand-every 2 --face-every 2`) | `ghosts.skip_turn` | +1.2-1.4 FPS, fewer blinks; **not used**: steppy hands and a jumping face live |
 | **Person detector every 3rd frame while everyone is followed** (`--detect-every 3`) | `poser._detect_now` | +1.2 FPS |
 | Python fixes found with py-spy (ghost face moved when read, `is_still()` every 10th box) | `poser._MovedLandmarks`, `Track.is_still` | +2 FPS with 4 people |
 

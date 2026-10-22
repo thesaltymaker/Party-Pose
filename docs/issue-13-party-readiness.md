@@ -34,7 +34,7 @@ hands 32/28. The lamp is not drawn (people drawn 2.90 of 3).
 **Conclusion:** 3 dancers replay at ~34 FPS, 4 people at ~31: live (30 FPS camera) that is 30 with 3 people and
 just about 30 with 4. With `--hand-every 3 --face-every 3`: three_dancers 35.25 / 35.46, three_people 32.65 /
 32.42, the same blinks, but the raw hand points step more between model runs (see Smooth figures). Choose between 2
-and 3 by eye in the live test.
+and 3 by eye in the live test. (Decided live: neither, see "Final settings after the live test".)
 
 ## Finding the people: the person detector
 
@@ -127,9 +127,28 @@ run with 0 rows, and the next run with a box failed its output copy. Fix in `Gpu
 before each run); the room clip, 3 detector settings: no crash; 90 s live with the service settings: no crash,
 30.9 FPS; replays unchanged (three_dancers 33.88, three_people 30.91).
 
+## Final settings after the live test (2026-10-18 to 10-22)
+
+Judged live by eye, two choices made on replay numbers were wrong:
+- `--hand-every 2/3 --face-every 2/3`: hands "very steppy" (at 3, also visible at 2) and the face jumped up and down:
+  between model runs the last result is moved with the wrist or head, then snaps to the new result. Off.
+- One Euro beta 0.5 for body, face and hands: arms and hands lagged. Back to the default 0.3, 1.5. The [MOTION] lag
+  number (+0.2-0.3 frames) did not show what a viewer sees.
+
+Kept: `--score-smooth 0.05`, `--ghost-frames 8`, `--face-keep -8`, the detector options, batching, `--detect-every 3`.
+Orin replays with the final service settings: three_dancers 33.56 FPS (2.9 of 3 drawn), three_people 29.03 (3.8 of
+4), two_people 42.55; blinks body 0-3, face 4-8. Live the camera gives 30.
+
+## Camera freezes (Argus out of memory)
+
+Live, the picture sometimes froze and the app stopped with "Camera read failed"; the log showed
+`NvMapMemAllocInternalTagged ... error 12` and `(Argus) Error InsufficientMemory`: the camera could not get a frame
+buffer. This is NVIDIA bug 5602402 in L4T 36.4.7; the Orin was upgraded to L4T 36.5.2, and the app now opens the
+camera again after a failed read (up to 5 tries, `src/video_capture.py`, `test_camera_reopen.py`). During the
+search: little free CMA memory (2-12 MB of 256 MB) with the app's 16 TensorRT sessions and a full file cache.
+
 ## Left to do
 
-- Live test with 3-4 people (full screen, `--test-label` with a seconds counter, recorded with
-  `tools/orin_bench/record_video.py`), every 2nd vs every 3rd frame.
-- Merge to main; update the Orin checkout and `~/.config/party-pose/party-pose.env` (the old `--face-hold` no
-  longer exists).
+- Live test with 3-4 people (full screen, `--test-label` with a seconds counter; record low-light scenes with
+  `tools/orin_bench/record_video.py --black` so the monitor doesn't light the room).
+- Done: merged to main (2026-10-22); the Orin checkout and `~/.config/party-pose/party-pose.env` match the repo.
