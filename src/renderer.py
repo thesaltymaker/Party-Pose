@@ -145,7 +145,11 @@ class Renderer:
         cv2.putText(cpu_frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), thick)
 
     def draw_fps(self, cpu_frame: np.ndarray, fps: float) -> None:
-        cv2.putText(cpu_frame, f'FPS: {fps:.1f}', (10, 30),
+        # Lower right corner: the last place people look.
+        text = f'FPS: {fps:.1f}'
+        (w, _), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
+        h, fw = cpu_frame.shape[:2]
+        cv2.putText(cpu_frame, text, (fw - w - 10, h - base - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, COLOR_FPS, 2)
 
 

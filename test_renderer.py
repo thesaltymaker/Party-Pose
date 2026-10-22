@@ -81,3 +81,12 @@ def test_banner_is_drawn_big_at_the_top_centre():
     cols = np.nonzero(frame.any(axis=(0, 2)))[0]
     assert rows.max() < 1080 // 4 and rows.max() - rows.min() > 1080 // 20   # top, readable from ~10 ft
     assert abs((cols.min() + cols.max()) / 2 - 960) < 20                        # centred
+
+
+def test_fps_counter_is_in_the_lower_right_corner():
+    # The owner: the lower right corner is the last place people look.
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    Renderer().draw_fps(frame, 30.9)
+    ys, xs = np.nonzero(frame.any(axis=2))
+    assert len(xs) and xs.min() > 1920 * 3 // 4 and ys.min() > 1080 * 3 // 4
+    assert xs.max() < 1920 and ys.max() < 1080
