@@ -46,6 +46,7 @@ These are decisions made in the design conversation, plus calls marked **(my cal
 
 - **Player:** `mpv --no-video`, one process, started with the track list. It plays to the chosen USB sink with `--audio-device=pulse/<sink-name>`. A file it cannot decode is skipped. **(my call)**
 - **Speaker buttons:** the Logitech speaker appears as an input device (`/dev/input/by-id/usb-Logitech_Logitech_USB_Speaker-event-if02`, event5 on 2026-10-22) with keys Mute, Volume Down/Up, Next Song, Play/Pause, Previous Song, Stop. The watcher finds that device by its `by-id` name containing the same `SINK_MATCH` text and reads its raw events (no `python3-evdev` on the Orin, so parse the 24-byte `input_event` records with `struct`). Key press (not release) maps to mpv's control socket (`--input-ipc-server`, JSON commands, confirmed working with mpv 0.34 on the Orin):
+  - Measured on the Orin 2026-10-22: Volume Up 115, Volume Down 114, Mute 113, Next 163, Previous 165, Play/Pause 164, Stop 166. Each press arrives as value 1 immediately followed by value 0.
   - Next Song: `playlist-next`. Previous Song: `playlist-prev`. In `random` mode these move through the shuffled order. Past either end the list wraps (the playlist loops).
   - Play/Pause: `cycle pause`. Pause is cleared when the player is restarted after a reconnect. **(my call)**
   - Stop, Mute and the volume keys: ignored by this service.
