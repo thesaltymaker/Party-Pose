@@ -194,6 +194,16 @@ ip -br addr show wlP1p1s0
 
 If `wlP1p1s0` shows `unavailable`, the wifi radio is off. Turn it on with `sudo nmcli radio wifi on` and wait a few seconds before checking again.
 
+### Optional: music on USB speakers (Orin only)
+
+A separate service plays `~/Projects/Video_Projects/Music` through USB speakers, only while they are plugged in. It stops on unplug, resumes on replug, and the speaker's Next, Previous and Play/Pause buttons work with no keyboard. It does not touch the pose app and is never installed on the laptop.
+
+```sh
+sh tools/orin_setup/install_audio_service.sh
+```
+
+Music files are copied to the Orin by hand and are not kept in the repo. Mode (`sorted`, `random`, `playlist`), volume and other settings are in `~/.config/party-pose/party-pose-audio.env`; after changing them or adding files, run `systemctl --user restart party-pose-audio`. Install options, the button list and the test checklist are in `tools/orin_setup/README.md`; the design is in `architecture.md` section g.
+
 ## Debugging detections
 
 ```bash
