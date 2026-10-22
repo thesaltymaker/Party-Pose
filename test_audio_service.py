@@ -1,10 +1,13 @@
 import random
+import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "tools" / "orin_setup" / "audio"))
 
-from party_pose_audio import list_tracks, rotate_from  # noqa: E402
+from party_pose_audio import (  # noqa: E402
+    BUTTON_COMMANDS, find_button_device, find_usb_sink, list_tracks,
+    parse_key_presses, rotate_from)
 
 
 def touch(folder, *names):
@@ -85,3 +88,57 @@ def test_rotate_from_wraps():
     assert rotate_from(["a", "b", "c"], 1) == ["b", "c", "a"]
     assert rotate_from(["a", "b", "c"], 0) == ["a", "b", "c"]
     assert rotate_from(["a", "b", "c"], 9) == ["a", "b", "c"]
+
+
+SINKS = (
+    "0\talsa_output.platform-sound.analog-stereo\tmodule-alsa-card.c\ts16le 2ch 44100Hz\tSUSPENDED\n"
+    "1\talsa_output.usb-Logitech_Logitech_USB_Speaker-00.analog-stereo\tmodule-alsa-card.c\ts16le 2ch 44100Hz\tSUSPENDED\n"
+)
+
+
+def test_find_usb_sink_picks_usb_not_builtin():
+    assert (find_usb_sink(SINKS, "usb")
+            == "alsa_output.usb-Logitech_Logitech_USB_Speaker-00.analog-stereo")
+
+
+def test_find_usb_sink_none_cases():
+    builtin = "0\talsa_output.platform-sound.analog-stereo\tm\ts16le\tSUSPENDED\n"
+    assert find_usb_sink(builtin, "usb") is None
+    assert find_usb_sink("", "usb") is None
+    assert find_usb_sink(None, "usb") is None
+
+
+def test_find_usb_sink_first_of_two_and_case_insensitive():
+    two = ("0\talsa_output.usb-A.analog-stereo\tm\ts\tS\n"
+           "1\talsa_output.usb-B.analog-stereo\tm\ts\tS\n")
+    assert find_usb_sink(two, "USB") == "alsa_output.usb-A.analog-stereo"
+
+
+def test_find_button_device():
+    names_ = ["usb-Logitech_Logitech_USB_Speaker-event-if02", "usb-Foo_Keyboard-event-kbd"]
+    assert find_button_device(names_, "speaker") == names_[0]
+    assert find_button_device(names_, "nomatch") is None
+    assert find_button_device([], "speaker") is None
+
+
+def rec(type_, code, value):
+    return struct.pack("llHHi", 0, 0, type_, code, value)
+
+
+def test_parse_key_presses_press_only():
+    data = rec(1, 163, 1) + rec(1, 163, 0) + rec(0, 0, 0) + rec(1, 30, 1)
+    assert parse_key_presses(data) == ([163, 30], b"")
+
+
+def test_parse_key_presses_keeps_partial_record():
+    data = rec(1, 164, 1) + b"abcdef"
+    codes, rest = parse_key_presses(data)
+    assert codes == [164]
+    assert len(rest) == 6
+
+
+def test_button_commands_map():
+    assert BUTTON_COMMANDS == {163: ["playlist-next"], 165: ["playlist-prev"],
+                               164: ["cycle", "pause"]}
+    for code in (166, 113, 114, 115):
+        assert code not in BUTTON_COMMANDS
