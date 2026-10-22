@@ -147,10 +147,10 @@ class Renderer:
     def draw_fps(self, cpu_frame: np.ndarray, fps: float) -> None:
         # Lower right corner: the last place people look.
         text = f'FPS: {fps:.1f}'
-        (w, _), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
+        (w, _), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
         h, fw = cpu_frame.shape[:2]
         cv2.putText(cpu_frame, text, (fw - w - 10, h - base - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, COLOR_FPS, 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_FPS, 1, cv2.LINE_AA)
 
 
 def _faded(color, fade: float) -> tuple:
