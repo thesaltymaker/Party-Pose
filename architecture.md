@@ -594,3 +594,29 @@ poser.py
   ├── src/fps_counter.py
   └── src/types.py             (shared by all modules)
 ```
+
+---
+
+## g. Optional Orin audio service (2026-10)
+
+Separate from the pose pipeline: a user systemd unit, `party-pose-audio.service`, installed only on the Orin by `tools/orin_setup/install_audio_service.sh` (never by the Party-Pose install, never on the laptop). It shares no code or process with `poser.py` and runs at `Nice=10`.
+
+```
+~/Projects/Video_Projects/Music/*.{webm,m4a,mp3,flac,ogg,opus,wav}      (copied by hand, not in git)
+        |
+tools/orin_setup/audio/party_pose_audio.py   (stdlib Python, polls every 2 s)
+  Controller.tick():   pactl list short sinks --> find_usb_sink(SINK_MATCH)
+      speakers present, no player  --> set sink volume --> MpvPlayer(tracks rotated to resume point)
+      speakers gone,    player     --> remember playlist-pos, stop mpv
+      player exited on its own     --> restart, at most every 5 s
+  button thread:  /dev/input/by-id/*USB_Speaker*-event* --> parse_key_presses --> Controller.press
+      163 Next -> playlist-next   165 Previous -> playlist-prev   164 Play/Pause -> cycle pause
+        |
+mpv --no-video --audio-device=pulse/<usb sink> --loop-playlist=inf --input-ipc-server=$XDG_RUNTIME_DIR/party-pose-audio.sock
+```
+
+- **Modes** (`MODE` in `~/.config/party-pose/party-pose-audio.env`): `sorted` (default), `random`, `playlist` (`playlist.m3u` in the Music folder). Other keys: `MUSIC_DIR`, `VOLUME` (set on the sink at every connect), `SINK_MATCH`.
+- **Resume** after a replug restarts at the track that was playing (kept in memory only); `random` reshuffles. The folder is read each time playback starts, so new files need a service restart.
+- **Install pieces:** user unit in `~/.config/systemd/user/`, env file, linger for the user (boot start with no login; the Orin's `pulseaudio.socket` is already user socket-activated), and a udev rule (`/etc/udev/rules.d/99-party-pose-audio.rules`) that lets group `audio` read the speaker's input device. `--no-udev`, `--no-enable`, `--force`, `--uninstall` are the options.
+- **Tests:** `test_audio_service.py` (laptop, `mpv` and `pactl` stubbed). Hardware behaviour is checked on the Orin; see the audio section of `tools/orin_setup/README.md`.
+- **Files:** `tools/orin_setup/audio/{party_pose_audio.py, party-pose-audio.service.in, party-pose-audio.env.example, 99-party-pose-audio-buttons.rules}`, `tools/orin_setup/install_audio_service.sh`.

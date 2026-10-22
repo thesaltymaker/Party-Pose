@@ -101,3 +101,20 @@ All numbers and tables: `docs/issue-13-party-readiness.md`.
 - **Replays with people from the first frame hid a live crash.** Live, with nobody drawn at first, the YOLOX tiny detector gave 0 rows for a few frames; the first frame with a box then failed in ONNX Runtime's output copy ("CUDA failure 1: invalid argument", every later run too), because the I/O binding kept the output of the empty first result. Fix: bind the output again before each run (no FPS change). It needed a clip where the first frames have no box (`testdata/clips/room_one_still`, one person sitting still, not drawn) and a test (`test_detector_finds_people_after_frames_with_nobody`). Every A/B now needs such a clip, and live smoke tests run unattended: the app must work with nobody in view.
 - **The board throttles on over-current.** `soctherm_oc` counter `oc3_event_cnt` was 6733 after 8 h at MAXN_SUPER; each event lowers the clocks for a moment (a source of run-to-run FPS spread). NVIDIA's `nvpmodel_indicator` shows a desktop notification for each; banners are off for the show (`gsettings set org.gnome.desktop.notifications show-banners false`).
 
+
+## Optional music service on the Orin (2026-10-22)
+
+Design and plan: `docs/superpowers/specs/2026-10-22-orin-audio-service-design.md`, `docs/superpowers/plans/2026-10-22-orin-audio-service.md`.
+
+- **A matching checksum proves the copy, not that the file plays.** The first test file, an `.m4a`, was truncated (`moov atom not found`) on the laptop already; the copy had the same checksum and the service looked healthy (active, no errors) but never produced sound. Run `ffprobe` on every file before copying it.
+- **`--really-quiet` hid why mpv kept exiting.** The service was "active" while mpv died every 5 s. Reproduce by running the pieces by hand: first the controller on its own, then mpv without the quiet flag.
+- **`scp` fails on filenames with `|`, `#`, brackets and emoji.** Use `tar -c -- files | ssh orin 'cd dir && tar -x'`, then compare checksums.
+- **Sink numbers change across reboots.** The USB speaker was sink 1, then sink 0. Match the sink by name (`SINK_MATCH`), never by number.
+- **Read the speaker's buttons by listening, not by the key list.** The input device advertised keys, but only a recording of real presses (with the press order written down) showed which code each button sends. A first 60 s run caught a single press because it started before the person was at the speaker; ask for a "go" first.
+- **Input devices are `root:input`; adding a user to `input` also exposes the keyboard.** A udev rule matching USB audio-class devices gives group `audio` read access to just the speaker. For a quick probe, `sudo setfacl -m u:USER:r /dev/input/eventN` (lost on replug or reboot).
+- **No sudo password over ssh means the installer needs a `--no-udev` path.** Everything else (user unit, linger, env file) works without sudo.
+- **The user systemd journal may not exist.** `journalctl --user` printed "No journal files were found"; `journalctl -b _SYSTEMD_USER_UNIT=<name>` reads the system journal instead.
+- **The default laptop `python` here has no pytest.** Use `/usr/bin/python3 -m pytest`.
+- **Cherry-pick when a branch carries unrelated commits.** `audio-service` was cut from `issue-13-ghosts`, 28 commits ahead of `main`; merging would have pulled them all in. The eight audio commits went onto `main` by cherry-pick.
+- **Subagent work was accepted only after re-running the tests and reading the diff.** One reported success while the real fault (the broken file) only showed on the Orin: unit tests on the laptop cannot cover the player and the hardware.
+- **Music never goes in the repo.** It lives in `~/Projects/Video_Projects/Music` and is copied to the Orin by hand.
