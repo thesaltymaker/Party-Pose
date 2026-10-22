@@ -82,6 +82,38 @@ A stop during the first run after an env rebuild, while TensorRT engines build, 
 - Esc on an attached keyboard: `[EXIT] quit key pressed`, and `systemctl status party-pose` shows inactive (not restarting).
 - `pkill -KILL -f poser.py`: `systemctl status party-pose` shows it restarting within about 5 s.
 
+## install_audio_service.sh: music on USB speakers (optional)
+
+```sh
+cd ~/Projects/Party-Pose && git pull && sh tools/orin_setup/install_audio_service.sh
+```
+
+Needs `mpv` and `pactl` (`sudo apt install mpv pulseaudio-utils`) and your sudo password once, for the udev rule. It installs a systemd user unit `party-pose-audio.service` (enabled at boot, lingering turned on for your user), creates `~/.config/party-pose/party-pose-audio.env` if it doesn't exist, and adds `/etc/udev/rules.d/99-party-pose-audio.rules` so group `audio` can read the speaker's buttons. Options: `--no-enable`, `--no-udev`, `--force` (install on a machine that is not the Orin), `--uninstall` (keeps the env file and lingering). Party-Pose runs the same without it.
+
+The service checks every 2 s for an audio output whose name contains `SINK_MATCH`. While one is present it plays the Music folder in a loop with `mpv` (no video, `Nice=10`); when it is unplugged the music stops, and plugging it back in starts it again, not paused.
+
+Env keys in `~/.config/party-pose/party-pose-audio.env` (then `systemctl --user restart party-pose-audio`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `MUSIC_DIR` | `~/Projects/Video_Projects/Music` | Folder with `.webm .m4a .mp3 .flac .ogg .opus .wav` files (subfolders not searched) |
+| `MODE` | `sorted` | `sorted` (filename order), `random`, or `playlist` |
+| `PLAYLIST` | `<MUSIC_DIR>/playlist.m3u` | For `MODE=playlist`: one file name per line, relative to `MUSIC_DIR` |
+| `VOLUME` | `50` | Percent, set on the speakers each time they are detected |
+| `SINK_MATCH` | `usb` | Text in the audio output's name (case-insensitive); also finds the speaker's buttons |
+
+Speaker buttons: Next and Previous move through the list (wrapping at the ends), Play/Pause pauses and resumes. Stop, Mute and Volume Up/Down are ignored by this service (the desktop handles volume).
+
+Logs: `journalctl --user -u party-pose-audio -f`.
+
+### Audio testing checklist
+
+- Plug in the speakers: music plays in the chosen order. Unplug: silence. Plug back in: music plays again, not paused.
+- Press Next, Previous and Play/Pause on the speaker and hear the change. Press Volume Up/Down and check the desktop level changes.
+- Boot with the speakers unplugged: the log is quiet, and music starts when they are plugged in.
+- With music playing, Party-Pose FPS is unchanged and `top -b -n1` shows the service well under 5% CPU.
+- `sh tools/orin_setup/install_audio_service.sh --uninstall`: nothing from the service is left running.
+
 ### Diagnosing false positives without saving images
 
 `--show-ids` draws each person's track number (`#3`) on screen; `--track-report 10` prints one text line per track to the log every 10 seconds (box position and size, detector score, box and limb movement relative to box height, pose score, how often a head was matched, face scores). No images are saved.

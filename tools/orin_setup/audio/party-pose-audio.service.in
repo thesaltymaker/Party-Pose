@@ -1,0 +1,21 @@
+# Party-Pose music on USB speakers. Installed by tools/orin_setup/install_audio_service.sh,
+# which fills in @REPO@ and @ENV_FILE@. Edit the template, not ~/.config/systemd/user/party-pose-audio.service.
+[Unit]
+Description=Party-Pose music on USB speakers
+# Give up restarting after 5 crashes in 10 minutes.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Settings for the music folder, mode and volume. The "-" means a missing file is not an error.
+EnvironmentFile=-@ENV_FILE@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 @REPO@/tools/orin_setup/audio/party_pose_audio.py
+Restart=on-failure
+RestartSec=5
+# Music never competes with the pose app for CPU.
+Nice=10
+
+[Install]
+WantedBy=default.target
