@@ -7,9 +7,11 @@ import time
 from typing import Tuple, Optional
 
 NIGHT_GAIN_MAX = 171
-NIGHT_EXPOSURE_MAX = 683710
 NIGHT_GAIN_THRESHOLD_FRAC = 0.95
-NIGHT_EXPOSURE_THRESHOLD_FRAC = 0.5
+NIGHT_EXPOSURE_MIN_US = 27000  # ~the whole frame time at 30 fps: the camera cannot expose longer
+DAY_GAIN_MAX = 64  # back to day only when this bright, well below night: IR light lowers the gain a little
+SWITCH_CHECKS = 3  # readings in a row (one a second) before switching
+IRCUT_CHIP, IRCUT_LINE = "gpiochip0", 144  # header pin 7 (PAC.06), tools/orin_setup/ircut: high = filter out
 # Orin NoIR IMX219: per-channel BGR gain applied on top of wbmode=3, landing between
 # the wbmode=2 and wbmode=3 looks (issue #4). Stored as gain*128 for an 8-bit GPU multiply.
 ORIN_WB_GAIN_BGR = (1.145, 1.0, 0.937)
@@ -44,23 +46,58 @@ def query_gain_exposure(device: str = "/dev/video0") -> Tuple[Optional[int], Opt
         return (None, None)
 
 
+class IRCutFilter:
+    """The camera's IR-cut filter on header pin 7: high moves it out (night, IR reaches the sensor), low puts it
+    back (day). A `gpioset --mode=signal` process holds the pin while it runs; set() replaces it."""
+
+    def __init__(self, popen=lambda args: subprocess.Popen(args)) -> None:
+        self._popen = popen
+        self._proc = None
+        self.set(False)
+
+    def set(self, night: bool) -> None:
+        self.close()
+        try:
+            self._proc = self._popen(["gpioset", "--mode=signal", IRCUT_CHIP, f"{IRCUT_LINE}={int(night)}"])
+        except OSError as e:
+            print(f"[IRCUT] could not set pin 7: {e}", flush=True)
+
+    def close(self) -> None:
+        if self._proc is not None:
+            self._proc.terminate()
+            self._proc.wait(timeout=2)
+            self._proc = None
+
+
 class NightModeDetector:
-    def __init__(self, check_every_n_frames: int = 30) -> None:
+    """Night when the camera is at full gain and full exposure for SWITCH_CHECKS readings; day again only when
+    the gain falls to DAY_GAIN_MAX. on_change(night) is called on each switch."""
+
+    def __init__(self, check_every_n_frames: int = 30, query=query_gain_exposure, on_change=None) -> None:
         self._check_interval = max(1, check_every_n_frames)
         self._frame_count = 0
         self._is_night: bool = False
+        self._query = query
+        self._on_change = on_change
+        self._streak = 0
 
     def update(self) -> bool:
         self._frame_count += 1
         if self._frame_count % self._check_interval == 0:
-            gain, exposure = query_gain_exposure()
-            condition = (
-                gain is not None
-                and exposure is not None
-                and gain >= NIGHT_GAIN_MAX * NIGHT_GAIN_THRESHOLD_FRAC
-                and exposure >= NIGHT_EXPOSURE_MAX * NIGHT_EXPOSURE_THRESHOLD_FRAC
-            )
-            self._is_night = condition
+            gain, exposure = self._query()
+            if gain is not None and exposure is not None:
+                if self._is_night:
+                    switch = gain <= DAY_GAIN_MAX
+                else:
+                    switch = gain >= NIGHT_GAIN_MAX * NIGHT_GAIN_THRESHOLD_FRAC and exposure >= NIGHT_EXPOSURE_MIN_US
+                self._streak = self._streak + 1 if switch else 0
+                if self._streak >= SWITCH_CHECKS:
+                    self._is_night = not self._is_night
+                    self._streak = 0
+                    print(f"[NIGHT] {'night' if self._is_night else 'day'} (gain {gain}, exposure {exposure} us)",
+                          flush=True)
+                    if self._on_change is not None:
+                        self._on_change(self._is_night)
         return self._is_night
 
 
@@ -113,7 +150,11 @@ class VideoCaptureModule:
             self._wb_gain.upload(np.full((self.height, self.width, 3),
                                          [round(g * 128) for g in ORIN_WB_GAIN_BGR], np.uint8))
         # Initialize night mode detector for Orin platform (not for a clip: it reads the live camera's gain)
-        self._night_mode = NightModeDetector() if config.platform == "orin" and self._clip is None else None
+        self._ircut = None
+        self._night_mode = None
+        if config.platform == "orin" and self._clip is None:
+            self._ircut = IRCutFilter()
+            self._night_mode = NightModeDetector(on_change=self._ircut.set)
 
     def read_frame(self) -> cv2.cuda_GpuMat:
         if self._clip is not None:
@@ -159,3 +200,5 @@ class VideoCaptureModule:
     def release(self) -> None:
         if self._cap is not None:
             self._cap.release()
+        if self._ircut is not None:
+            self._ircut.close()

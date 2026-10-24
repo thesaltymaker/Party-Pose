@@ -75,6 +75,7 @@ def main() -> None:
     ap.add_argument('--label', default='dance!', help='what to do, shown on the monitor')
     ap.add_argument('--light', default='', help='the room light, saved with the clip (e.g. "lamps on, blinds shut")')
     ap.add_argument('--lux', type=float, default=None, help='a light meter reading at the dancers, saved with the clip')
+    ap.add_argument('--night', action='store_true', help='move the IR-cut filter out (pin 7 high) for the whole recording')
     ap.add_argument('--black', action='store_true', help='show a black screen instead of the preview (low-light recording)')
     args = ap.parse_args()
     global BLACK
@@ -82,6 +83,8 @@ def main() -> None:
 
     Path(args.clip).parent.mkdir(parents=True, exist_ok=True)
     cap = VideoCaptureModule(SimpleNamespace(platform=detect_platform(), camera=args.camera, mirror=False, video=None))
+    if args.night and cap._ircut is not None:
+        cap._ircut.set(True)
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     try:
