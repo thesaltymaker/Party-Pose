@@ -41,6 +41,7 @@ def main():
     p.add_argument('--gamma', type=float, default=1.0, help='brighten dark pixels: 255 * (v / 255) ** (1 / gamma)')
     p.add_argument('--area', action='store_true', help='shrink with INTER_AREA (averages pixels) instead of INTER_LINEAR')
     p.add_argument('--no-mirror', dest='mirror', action='store_false')
+    p.add_argument('--gray', action='store_true', help='grayscale, as the app shows the picture in night mode')
     a = p.parse_args()
 
     if detect_platform() != 'orin' and hasattr(ort, 'preload_dlls'):
@@ -73,6 +74,8 @@ def main():
         n += 1
         if a.mirror:
             frame = cv2.flip(frame, 1)
+        if a.gray:
+            frame = cv2.cvtColor(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
         if a.stretch:
             img = cv2.resize(frame, (in_w, in_h), interpolation=interp)
         else:
