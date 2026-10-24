@@ -74,6 +74,19 @@ gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
     --method org.freedesktop.DBus.Properties.Set org.gnome.Shell OverviewActive '<false>' \
     >/dev/null 2>&1 || true
 
+# Move the mouse pointer to the bottom-right corner so it does not sit over the picture (X clamps to the screen edge).
+"$REPO/env/bin/python" -c "
+import ctypes, ctypes.util
+x = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11'))
+x.XOpenDisplay.restype = ctypes.c_void_p
+x.XDefaultRootWindow.argtypes = [ctypes.c_void_p]; x.XDefaultRootWindow.restype = ctypes.c_ulong
+x.XWarpPointer.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong] + [ctypes.c_int] * 2 + [ctypes.c_uint] * 2 + [ctypes.c_int] * 2
+x.XCloseDisplay.argtypes = [ctypes.c_void_p]
+d = x.XOpenDisplay(None)
+x.XWarpPointer(d, 0, x.XDefaultRootWindow(d), 0, 0, 0, 0, 32767, 32767)
+x.XCloseDisplay(d)
+" >/dev/null 2>&1 || echo "run: could not move the mouse pointer"
+
 cd "$REPO" || exit 1
 echo "run: python poser.py $POSER_ARGS"
 # shellcheck disable=SC2086  # POSER_ARGS is intentionally split into words
