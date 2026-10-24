@@ -74,18 +74,35 @@ gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
     --method org.freedesktop.DBus.Properties.Set org.gnome.Shell OverviewActive '<false>' \
     >/dev/null 2>&1 || true
 
-# Move the mouse pointer to the bottom-right corner so it does not sit over the picture (X clamps to the screen edge).
+# Keep the mouse pointer in the bottom-right corner (screen size from xrandr) so it does not sit over the picture.
+# Runs in the background for 120 s, checking once a second: at boot the X server can refuse us until the login
+# rewrites the X authority file, GNOME centres the pointer when it starts, and poser.py's window comes up later.
 "$REPO/env/bin/python" -c "
-import ctypes, ctypes.util
+import ctypes, ctypes.util, re, subprocess, time
 x = ctypes.cdll.LoadLibrary(ctypes.util.find_library('X11'))
 x.XOpenDisplay.restype = ctypes.c_void_p
 x.XDefaultRootWindow.argtypes = [ctypes.c_void_p]; x.XDefaultRootWindow.restype = ctypes.c_ulong
 x.XWarpPointer.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong] + [ctypes.c_int] * 2 + [ctypes.c_uint] * 2 + [ctypes.c_int] * 2
-x.XCloseDisplay.argtypes = [ctypes.c_void_p]
-d = x.XOpenDisplay(None)
-x.XWarpPointer(d, 0, x.XDefaultRootWindow(d), 0, 0, 0, 0, 32767, 32767)
-x.XCloseDisplay(d)
-" >/dev/null 2>&1 || echo "run: could not move the mouse pointer"
+x.XQueryPointer.argtypes = [ctypes.c_void_p, ctypes.c_ulong] + [ctypes.POINTER(ctypes.c_ulong)] * 2 + [ctypes.POINTER(ctypes.c_int)] * 4 + [ctypes.POINTER(ctypes.c_uint)]
+x.XFlush.argtypes = [ctypes.c_void_p]
+d, corner, moved = None, None, False
+w, c, i, m = ctypes.c_ulong(), ctypes.c_ulong(), [ctypes.c_int() for _ in range(4)], ctypes.c_uint()
+for _ in range(120):
+    d = d or x.XOpenDisplay(None)
+    if d and not corner:
+        out = subprocess.run(['xrandr', '--current'], capture_output=True, text=True).stdout
+        s = re.search(r' connected (?:primary )?(\d+)x(\d+)\+', out) or re.search(r'current (\d+) x (\d+)', out)
+        corner = s and (int(s.group(1)) - 1, int(s.group(2)) - 1)
+    if d and corner:
+        root = x.XDefaultRootWindow(d)
+        x.XQueryPointer(d, root, w, c, *i, m)
+        if (i[0].value, i[1].value) != corner:
+            x.XWarpPointer(d, 0, root, 0, 0, 0, 0, *corner)
+            x.XFlush(d)
+        moved = True
+    time.sleep(1)
+raise SystemExit(0 if moved else 1)
+" >/dev/null 2>&1 || echo "run: could not move the mouse pointer" &
 
 cd "$REPO" || exit 1
 echo "run: python poser.py $POSER_ARGS"
