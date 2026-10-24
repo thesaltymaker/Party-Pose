@@ -38,12 +38,21 @@ def head_turn(pose) -> float:
     return (pose[0].x - (pose[7].x + pose[8].x) / 2) / abs(ears)
 
 
-def face_min_logit(pose, held: bool, hold_logit: float) -> float:
+# In night mode (IR-cut filter out, gain at its limit) the picture is grainy and real faces score lower: on the IR
+# dance clip 20 of 49 face crops reached 0, 29 reached -6, 42 reached -10.
+NIGHT_FACE_NEW = -6.0
+NIGHT_FACE_HOLD = -10.0
+
+
+def face_min_logit(pose, held: bool, hold_logit: float, night: bool = False) -> float:
     """The face logit a person's face needs this frame: 0 (presence 0.5), or hold_logit when it was kept last frame
-    and the pose's head is not turned away (--face-keep)."""
+    and the pose's head is not turned away (--face-keep). In night mode NIGHT_FACE_NEW and NIGHT_FACE_HOLD."""
+    new = NIGHT_FACE_NEW if night else 0.0
+    if night:
+        hold_logit = min(hold_logit, NIGHT_FACE_HOLD)
     if held and pose is not None and abs(head_turn(pose)) < FACE_HOLD_TURN:
-        return min(0.0, hold_logit)
-    return 0.0
+        return min(new, hold_logit)
+    return new
 
 
 class FaceProcessor:

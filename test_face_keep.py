@@ -1,7 +1,7 @@
 """--face-keep: a face kept last frame stays while its logit is above a lower value and the head is not turned away."""
 import numpy as np
 
-from src.face_processor import FaceProcessor, face_min_logit, head_turn
+from src.face_processor import NIGHT_FACE_HOLD, NIGHT_FACE_NEW, FaceProcessor, face_min_logit, head_turn
 from src.types import BoundingBox, Landmark
 
 
@@ -45,3 +45,19 @@ def test_result_uses_min_logit():
     assert fp._result(box, box, raw, -3.0, 640, 480, False, -8.0) is not None    # held face
     assert fp._result(box, box, raw, -9.0, 640, 480, False, -8.0) is None
     assert fp._result(box, box, raw, 0.5, 640, 480, False, 0.0) is not None
+
+
+def test_night_new_face_needs_night_logit():
+    assert face_min_logit(_pose(), False, -8.0, night=True) == NIGHT_FACE_NEW
+
+
+def test_night_held_face_keeps_down_to_night_hold():
+    assert face_min_logit(_pose(), True, -8.0, night=True) == NIGHT_FACE_HOLD
+
+
+def test_night_turned_head_needs_night_new_logit():
+    assert face_min_logit(_pose(nose_x=545), True, -8.0, night=True) == NIGHT_FACE_NEW
+
+
+def test_night_without_pose_uses_night_new_logit():
+    assert face_min_logit(None, True, -8.0, night=True) == NIGHT_FACE_NEW

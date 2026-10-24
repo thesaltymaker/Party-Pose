@@ -630,8 +630,10 @@ def main():
                 with_box = [k for k in with_box if (people[k][0].id, 'face') not in skipped]
                 if with_box:
                     t = time.perf_counter()
+                    night = capture.is_night
                     mins = ([face_min_logit(bodies[k] and bodies[k].landmarks, people[k][0].id in face_held,
-                                            config.face_keep) for k in with_box] if config.face_keep else None)
+                                            config.face_keep, night) for k in with_box]
+                            if config.face_keep or night else None)
                     faces = face_proc.process_many(frame_gpu, [face_boxes[k] for k in with_box], frame_w, frame_h,
                                                    config.mirror, mins)
                     faces_by_person = dict(zip(with_box, zip(faces, face_proc.last_logits)))

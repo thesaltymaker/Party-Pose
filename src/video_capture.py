@@ -192,6 +192,11 @@ class VideoCaptureModule:
                 return frame
         raise RuntimeError('Camera read failed')
 
+    @property
+    def is_night(self) -> bool:
+        """Night mode: the IR-cut filter is out (live Orin camera only)."""
+        return self._night_mode is not None and self._night_mode._is_night
+
     def keep_frames(self, n: int) -> None:
         """Upload each frame into the next of N GPU buffers, so the last N frames stay valid (--detect-ahead)."""
         self._gpu_frames = [cv2.cuda_GpuMat() for _ in range(n)]
