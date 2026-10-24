@@ -1,0 +1,40 @@
+/*
+ * Header pin 7 (soc_gpio59_pac6, gpiochip0 line 144) as a GPIO that can drive an output, for the
+ * camera's IR-cut filter signal. On JetPack 6 the kernel cannot switch a header pin to output at run
+ * time, so gpioset "works" but the pin does not change until the pinmux is set at boot.
+ * Same pin properties jetson-io writes for a GPIO pin (Jetson/board.py: tristate 0, enable-input 1,
+ * gpio-mode 0); the rest of the node is copied from tegra234-p3767-0000+p3509-a02-hdr40.dtbo.
+ *
+ * Build:   dtc -@ -I dts -O dtb -o pin7-gpio.dtbo pin7-gpio.dts
+ * Install: copy to the SD card's boot/ and add it to the OVERLAYS line of the JetsonIO entry (README.md).
+ */
+/dts-v1/;
+/plugin/;
+
+/ {
+	overlay-name = "Party-Pose pin 7 GPIO (IR-cut)";
+	compatible = "nvidia,p3768-0000+p3767-0000", "nvidia,p3768-0000+p3767-0001",
+		     "nvidia,p3768-0000+p3767-0003", "nvidia,p3768-0000+p3767-0004",
+		     "nvidia,p3768-0000+p3767-0005", "nvidia,p3768-0000+p3767-0000-super",
+		     "nvidia,p3768-0000+p3767-0001-super", "nvidia,p3768-0000+p3767-0003-super",
+		     "nvidia,p3768-0000+p3767-0004-super", "nvidia,p3768-0000+p3767-0005-super";
+
+	fragment@0 {
+		target = <&pinmux>;
+
+		__overlay__ {
+			pinctrl-names = "default";
+			pinctrl-0 = <&ircut_pinmux>;
+
+			ircut_pinmux: ircut-pinmux {
+				hdr40-pin7 {
+					nvidia,pins = "soc_gpio59_pac6";
+					nvidia,function = "aud";
+					nvidia,tristate = <0>;
+					nvidia,enable-input = <1>;
+					nvidia,gpio-mode = <0>;
+				};
+			};
+		};
+	};
+};
